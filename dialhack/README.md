@@ -7,6 +7,8 @@ Turn the tiny Smart Dial on the <b>CMF Buds Pro 2</b> charging case into a gener
 and learn how you fidget along the way. Everything stays on your Mac.
 </p>
 
+<p align="center"><sub>Unofficial project, not affiliated with Nothing or CMF.</sub></p>
+
 <p align="center">
 <a href="../../../releases/latest/download/DialHack.zip"><b>⬇ Download DialHack for Mac</b></a>
 &nbsp;·&nbsp; macOS 14+ · Apple Silicon
