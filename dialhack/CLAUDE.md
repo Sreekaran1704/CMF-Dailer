@@ -9,7 +9,9 @@ The full build brief (goals, hardware facts, phases, engineering rules) is in [d
 - **Phase 0 macOS: done** (`docs/findings.md`). Decisions: the idle "drift" was the dial being handled; mode switching is "double press, then turn".
 - **Phase 1 macOS: built** (`mac/DialHack`). Core is unit tested (`./build.sh test`). The volume hijack is integration-tested by simulating clicks with `osascript set volume`.
 - **Android: sniffer builds (SDK in ~/Library/Android/sdk), guided mode added.** `android/run-guided.sh` waits for a phone; the test hasn't run yet.
-- **Phase 2 analytics: built** (`analytics/dialhack_analytics`, `analytics/dashboard.py`, venv at `analytics/.venv`). 11 pytest tests pass on synthetic data; real data is still about 30 mostly-stray events.
+- **Phase 2 analytics: built** (`analytics/dialhack_analytics`, `analytics/dashboard.py`, venv at `analytics/.venv`). 14 pytest tests. Labels come from the dashboard plus Focus Timer tags and ratings (source kept). The classifier uses time-ordered folds against a majority baseline, with "not enough data" below 30 labels.
+- **DialHack is a full window app** (Dial, Focus, Activity, Insights, Settings) plus the menu bar. Native Insights in `Sources/Core/Insights` matches Python exactly on window features (`mac/DialHack/Tests/parity.py`).
+- **Focus Timer mode** (DialHack) writes `labels.jsonl`. Scripted test sessions go in `~/Library/Application Support/DialHack/exclude_sessions.txt` (shared by app and Python; the app can't read ~/Documents).
 - The user does physical actions only and handles git. Never run git commands.
 
 ## Layout

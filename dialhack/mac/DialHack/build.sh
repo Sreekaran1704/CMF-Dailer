@@ -9,17 +9,20 @@ cd "$(dirname "$0")"
 mkdir -p .build
 FLAGS="-swift-version 5 -target arm64-apple-macosx14.0"
 
-swiftc $FLAGS Sources/Core/*.swift Tests/main.swift -o .build/CoreTests
+swiftc $FLAGS $(find Sources/Core -name "*.swift") Tests/main.swift -o .build/CoreTests
 .build/CoreTests
 [ "$1" = "test" ] && exit 0
 
-swiftc -O $FLAGS -parse-as-library Sources/Core/*.swift $(find Sources/App -name '*.swift') -o .build/DialHack
+swiftc -O $FLAGS -parse-as-library $(find Sources/Core Sources/App -name "*.swift") -o .build/DialHack
 
 APP=.build/DialHack.app
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS"
 cp Info.plist "$APP/Contents/Info.plist"
 cp .build/DialHack "$APP/Contents/MacOS/DialHack"
+mkdir -p "$APP/Contents/Resources"
+cp Resources/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
+cp -R Resources/Fonts "$APP/Contents/Resources/Fonts"
 codesign --force --sign - --identifier dev.dialhack.app -r='designated => identifier "dev.dialhack.app"' "$APP"
 echo "Built $(pwd)/$APP"
 

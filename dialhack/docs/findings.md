@@ -89,6 +89,14 @@ With DialHack left running in Passthrough for about two days, it logged **22 `PA
 
 Neither is harmful in Passthrough, but in a dial mode a removed bud would act as `PRESS_1` (page down, space, enter digit) and a nudge as a turn. **Mitigation in DialHack:** any dial mode drops back to Passthrough after **5 minutes without dial input** (Settings, 0 = off). Integration-tested: Scroll → Passthrough after the timeout, with the user's volume restored. If ear-detection pauses are still a problem while actively using a mode, turn off in-ear detection in Nothing X.
 
+## Volume during dial modes (user report, 2026-10-20)
+
+With lazy restore, scrolling **audibly changed the volume** until the dial stopped, and entering a mode jumped the volume to 50%. Changes:
+- **Park at the user's own level** (snapped to 1/16, kept ≥ 3 clicks from either end), not 50%.
+- **Restore after every click** is now the default. In a simulated-click test, the volume was back within 250 ms of each click, and every click still became an action.
+- Lazy restore stays as a setting ("When the dial stops").
+- Trade-off from Phase 0: per-click restore made very fast spins lose clicks (2 of ~10 survived) and you heard blips. Slow clicks were 10/10. **Not yet re-measured with the real dial under the new default.**
+
 ## Latency
 
 - **Inconclusive.** No markers could be recorded without Input Monitoring. MPRemoteCommandEvent's self-reported timestamp turned out to use a different clock, so it can't be used either.

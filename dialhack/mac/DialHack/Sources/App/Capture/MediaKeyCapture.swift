@@ -9,7 +9,7 @@ final class MediaKeyCapture {
     var onRaw: ((RawInput, Double) -> Void)?
 
     private let center = MPRemoteCommandCenter.shared()
-    private let silence = SilentAudio()
+    let silence = SilentAudio()
 
     func start() {
         let commands: [(MPRemoteCommand, RawInput)] = [
@@ -45,16 +45,47 @@ final class MediaKeyCapture {
 }
 
 /// Digital silence through AVAudioEngine, to hold Now Playing while a hijacking mode is active.
+///
+/// AVAudioEngine stops by itself when the audio route changes (buds reconnecting, output switching).
+/// A stopped engine meant DialHack silently lost Now Playing, and dial presses went to whichever app
+/// played media last (user report, 2026-10-20). So: track the *desired* state, rebuild on configuration
+/// changes, and re-check every few seconds.
 final class SilentAudio {
     private var engine: AVAudioEngine?
+    private var wanted = false
+    private var observer: NSObjectProtocol?
+    private var health: Timer?
+    private(set) var restarts = 0
+
+    var isPlaying: Bool { engine?.isRunning ?? false }
 
     func set(_ on: Bool) {
-        if on == (engine != nil) { return }
-        guard on else {
-            engine?.stop()
-            engine = nil
-            return
+        wanted = on
+        if on {
+            if !isPlaying { rebuild() }
+            if health == nil {
+                health = Timer.scheduledTimer(withTimeInterval: 3, repeats: true) { [weak self] _ in
+                    guard let self, self.wanted, !self.isPlaying else { return }
+                    self.restarts += 1
+                    self.rebuild()
+                }
+            }
+        } else {
+            health?.invalidate()
+            health = nil
+            teardown()
         }
+    }
+
+    private func teardown() {
+        if let o = observer { NotificationCenter.default.removeObserver(o) }
+        observer = nil
+        engine?.stop()
+        engine = nil
+    }
+
+    private func rebuild() {
+        teardown()
         let e = AVAudioEngine()
         let format = e.outputNode.inputFormat(forBus: 0)
         let source = AVAudioSourceNode { _, _, _, abl -> OSStatus in
@@ -63,6 +94,12 @@ final class SilentAudio {
         }
         e.attach(source)
         e.connect(source, to: e.mainMixerNode, format: format)
+        observer = NotificationCenter.default.addObserver(forName: .AVAudioEngineConfigurationChange, object: e,
+                                                          queue: .main) { [weak self] _ in
+            guard let self, self.wanted else { return }
+            self.restarts += 1
+            self.rebuild()
+        }
         if (try? e.start()) != nil { engine = e }
     }
 }

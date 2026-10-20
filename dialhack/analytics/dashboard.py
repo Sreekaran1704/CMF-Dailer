@@ -11,7 +11,7 @@ import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
-from dialhack_analytics import features, ingest, model, paths, synth
+from dialhack_analytics import ingest, labels, model, paths, pipeline, synth
 
 st.set_page_config(page_title="DialHack · Fidget telemetry", page_icon="🎛️", layout="wide")
 
@@ -51,11 +51,7 @@ def mtime(p: Path) -> float:
 
 @st.cache_data(show_spinner=False)
 def load(db: str, _mtime: float, window: float, include_stray: bool, labels_mtime: float):
-    ev = ingest.load_events(Path(db))
-    w = features.compute_windows(ev, window_minutes=window)
-    lp = paths.labels_path_for(Path(db))
-    labels = pd.read_csv(lp) if lp.exists() else None
-    return ev, model.analyze(w, include_stray=include_stray, labels=labels)
+    return pipeline.build(Path(db), window_minutes=window, include_stray=include_stray)
 
 
 with st.sidebar:
@@ -68,7 +64,9 @@ with st.sidebar:
         if st.button("Build demo data"):
             df = synth.generate(days=14)
             src = synth.write_jsonl(df, paths.DATA_DIR / "demo-events.jsonl")
-            ingest.ingest([src], db_path=db)
+            lsrc = synth.write_label_jsonl(synth.focus_labels(df), paths.DATA_DIR / "demo-labels.jsonl")
+            ingest.ingest([src, lsrc], db_path=db)
+            synth.dashboard_labels(df).to_csv(paths.DEMO_LABELS_PATH, index=False)
             st.rerun()
     if not demo:
         added = ingest.ingest(db_path=db)  # idempotent: picks up new events from the Mac log and data/inbox
@@ -212,31 +210,65 @@ with tab_restless:
             hide_index=True, width="stretch")
 
 # --- labels -------------------------------------------------------------------------------------------
+SOURCE_NAMES = {labels.DASHBOARD: "Dashboard", labels.TAG: "Focus Timer tag", labels.SESSION: "Focus session rating"}
+
 with tab_labels:
-    st.subheader("Label windows (optional)")
-    st.caption(f"Tag windows as {', '.join(model.LABELS)}. With ≥ {model.MIN_LABELS} labels across ≥ 2 kinds, "
-               "a classifier predicts the rest.")
-    if res.classifier_accuracy is not None:
-        st.success(f"Classifier: {res.classifier_accuracy:.0%} cross-validated accuracy ({res.classifier_folds} folds).")
+    st.subheader("Labels and classifier")
+    st.caption("Labels come from three sources, kept separately: your Focus Timer double-press (“distracted”, in the moment), "
+               "the rating at the end of a Focus Timer session, and labels you set here. "
+               "When they disagree on a window: dashboard > tag > session rating.")
+    lw = w[w["label"].notna()]
+    if len(lw):
+        by_src = lw.groupby(["label_source", "label"]).size().unstack(fill_value=0)
+        by_src.index = [SOURCE_NAMES.get(i, i) for i in by_src.index]
+        st.dataframe(by_src, width="stretch")
+
+    rep = res.classifier
+    if rep is None or rep.status != "ok":
+        st.warning((rep.reason if rep else "No labels yet.") + f" Labeled so far: {len(lw)} windows.")
+    else:
+        m = st.columns(4)
+        m[0].metric("Balanced accuracy", f"{rep.model_balanced:.0%}",
+                    delta=f"{(rep.model_balanced - rep.baseline_balanced) * 100:+.0f} pts vs baseline")
+        m[1].metric("Majority baseline (balanced)", f"{rep.baseline_balanced:.0%}")
+        m[2].metric("Accuracy", f"{rep.model_accuracy:.0%}", delta=f"{(rep.model_accuracy - rep.baseline_accuracy) * 100:+.0f} pts vs baseline")
+        m[3].metric("Majority baseline", f"{rep.baseline_accuracy:.0%}")
+        if not rep.beats_baseline:
+            st.error("The classifier does not beat always guessing the most common label. Don't trust its predictions yet.")
+        st.caption(f"{len(rep.folds)} time-ordered folds: each trains only on windows before its test windows "
+                   f"(one-window gap). Classes: {', '.join(rep.classes_used)}. {rep.reason}")
+        f = rep.folds.copy()
+        for c in ("train_until", "test_from"):
+            f[c] = pd.to_datetime(f[c], utc=True).dt.tz_convert(LOCAL_TZ).dt.strftime("%a %d %b %H:%M")
+        st.dataframe(f, hide_index=True, width="stretch", column_config={
+            c: st.column_config.NumberColumn(c.replace("_", " "), format="percent")
+            for c in ("model_accuracy", "baseline_accuracy", "model_balanced", "baseline_balanced")})
+
+    st.markdown("**Label windows by hand**")
     ed = active.sort_values("local", ascending=False).assign(
-        when=lambda d: d["local"].dt.strftime("%a %d %b %H:%M"))[
-        ["window_start", "when", "rotations_per_min", "reversal_rate", "n_presses", "cluster", "predicted_label", "label"]]
+        when=lambda d: d["local"].dt.strftime("%a %d %b %H:%M"),
+        source=lambda d: d["label_source"].map(SOURCE_NAMES),
+        mine=lambda d: d["label"].where(d["label_source"] == labels.DASHBOARD))[
+        ["window_start", "when", "rotations_per_min", "reversal_rate", "n_presses", "cluster", "label", "source",
+         "predicted_label", "mine"]]
     edited = st.data_editor(
         ed, hide_index=True, width="stretch", height=420,
-        disabled=["window_start", "when", "rotations_per_min", "reversal_rate", "n_presses", "cluster", "predicted_label"],
+        disabled=["window_start", "when", "rotations_per_min", "reversal_rate", "n_presses", "cluster", "label",
+                  "source", "predicted_label"],
         column_config={"window_start": None,
-                       "label": st.column_config.SelectboxColumn("label", options=model.LABELS),
+                       "label": "current label",
+                       "mine": st.column_config.SelectboxColumn("your label", options=labels.LABELS),
                        "rotations_per_min": st.column_config.NumberColumn("turns/min", format="%.1f"),
                        "reversal_rate": st.column_config.NumberColumn("reversals", format="percent"),
                        "predicted_label": "predicted"})
-    if st.button("Save labels", type="primary"):
-        out = edited.dropna(subset=["label"])[["window_start", "label"]]
+    if st.button("Save my labels", type="primary"):
+        out = edited.dropna(subset=["mine"])[["window_start", "mine"]].rename(columns={"mine": "label"})
+        out["window_minutes"] = window
         lp = paths.labels_path_for(db)
-        if lp.exists():  # keep labels for windows not shown (other window sizes / stray filter)
-            old = pd.read_csv(lp)
-            old["window_start"] = pd.to_datetime(old["window_start"], utc=True)
-            out = pd.concat([old[~old["window_start"].isin(ed["window_start"])], out])
-        out.assign(window_start=pd.to_datetime(out["window_start"], utc=True).dt.strftime("%Y-%m-%dT%H:%M:%SZ")).to_csv(lp, index=False)
+        old = labels.read_dashboard_labels(lp)
+        old = old[~old["window_start"].isin(ed["window_start"]) | (old["window_minutes"] != window)]
+        allv = pd.concat([old, out], ignore_index=True)
+        allv.assign(window_start=pd.to_datetime(allv["window_start"], utc=True).dt.strftime("%Y-%m-%dT%H:%M:%SZ")).to_csv(lp, index=False)
         st.toast(f"Saved {len(out)} labels")
         st.cache_data.clear()
         st.rerun()

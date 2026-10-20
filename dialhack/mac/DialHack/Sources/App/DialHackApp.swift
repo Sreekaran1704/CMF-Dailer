@@ -5,7 +5,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var sigterm: DispatchSourceSignal?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        Coordinator.shared.start()
+        // Snapshot/click-test instances are inert: no capture, no Now Playing claim, no status writes,
+        // so they never fight the real DialHack for the dial.
+        if !SnapshotRunner.requested { Coordinator.shared.start() }
+        SnapshotRunner.runIfRequested()
         // `pkill` / logout: quit through NSApp so the user's volume is restored on the way out.
         signal(SIGTERM, SIG_IGN)
         let src = DispatchSource.makeSignalSource(signal: SIGTERM, queue: .main)
@@ -24,31 +27,67 @@ struct DialHackApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var delegate
     @ObservedObject private var c = Coordinator.shared
 
+    init() {
+        CK.registerFonts()
+    }
+
     var body: some Scene {
+        Window("DialHack", id: "main") {
+            MainWindow(c: c)
+        }
+        .windowStyle(.hiddenTitleBar)
+        .defaultSize(width: 1180, height: 820)
+        .commands {
+            CommandGroup(replacing: .newItem) {}
+        }
+
         MenuBarExtra {
             MenuContent(c: c)
         } label: {
-            Image(systemName: c.mode.hijacks ? "dial.high.fill" : "dial.low")
+            // The label depends on the exact mode, so the status item (and its menu) re-render on every switch,
+            // whether it came from the window, the dial or the menu itself.
+            if let clock = c.focusClock {
+                Label(clock, systemImage: "timer").labelStyle(.titleAndIcon)
+            } else if c.mode.hijacks {
+                Label(c.mode.title, systemImage: c.mode.symbol).labelStyle(.titleAndIcon)
+            } else {
+                Image(systemName: c.mode.symbol)
+            }
         }
         Settings {
-            SettingsView(c: c)
+            ScrollView { SettingsPane(c: c, compact: true).padding(24) }
+                .frame(width: 560, height: 680)
+                .background(PaperPage())
+                .foregroundStyle(CK.ink)
         }
     }
 }
 
 struct MenuContent: View {
     @ObservedObject var c: Coordinator
+    @Environment(\.openWindow) private var openWindow
 
     var body: some View {
+        Button("Open DialHack…") {
+            openWindow(id: "main")
+            NSApp.activate()
+        }
+        .keyboardShortcut("o")
+        Divider()
         Text("DialHack · \(c.mode.title)")
         Text(c.mode.hint)
+        if let clock = c.focusClock { Text("Focus: \(clock) left") }
         Divider()
-        ForEach(ModeID.allCases, id: \.self) { m in
-            Toggle(m.title, isOn: Binding(get: { c.mode == m }, set: { _ in c.selectMode(m) }))
+        Picker("Mode", selection: Binding(get: { c.mode }, set: { c.selectMode($0) })) {
+            ForEach(ModeID.allCases, id: \.self) { m in
+                Label(m.title, systemImage: m.symbol).tag(m)
+            }
         }
+        .pickerStyle(.inline)
         Text("Switch modes: \(c.config.pickerGesture.title.lowercased())")
         Divider()
         Text(c.device.matches ? "Output: \(c.device.name) ✓" : "Output: \(c.device.name) (dial inactive)")
+        if c.mode.hijacks && !c.pressRoute.ok { Text("⚠ \(c.pressRoute.text)") }
         if !c.accessibilityTrusted {
             Button("Allow Accessibility… (needed for actions)") { c.requestAccessibility() }
         }
@@ -63,66 +102,17 @@ struct MenuContent: View {
     }
 }
 
-struct SettingsView: View {
-    @ObservedObject var c: Coordinator
 
-    /// Digits only; ignores edits that would leave the code empty. (No @State: the CLT build lacks
-    /// the SwiftUI macro plugin.)
-    private var comboText: Binding<String> {
-        Binding(get: { c.config.comboCode.map(String.init).joined() },
-                set: { text in
-                    let digits = text.compactMap { $0.wholeNumberValue }
-                    if !digits.isEmpty { c.config.comboCode = digits }
-                })
-    }
-
-    var body: some View {
-        Form {
-            Section("Modes") {
-                Picker("Start in", selection: $c.config.startMode) {
-                    ForEach(ModeID.allCases, id: \.self) { Text($0.title).tag($0) }
-                }
-                Stepper("Scroll: \(c.config.scrollLinesPerStep) lines per click", value: $c.config.scrollLinesPerStep, in: 1...30)
-                HStack {
-                    Text("Combo code")
-                    TextField("digits", text: comboText)
-                        .frame(width: 120)
-                }
-                Button("Edit macros (config.json)…") {
-                    NSWorkspace.shared.activateFileViewerSelecting([Coordinator.configURL])
-                }
-            }
-            Section("Dial") {
-                Picker("Open mode picker with", selection: $c.config.pickerGesture) {
-                    ForEach(PickerGesture.allCases, id: \.self) { Text($0.title).tag($0) }
-                }
-                if c.config.pickerGesture == .doublePressTurn {
-                    Stepper("Double press → turn window: \(Int(c.config.pickerWindowMs)) ms", value: $c.config.pickerWindowMs, in: 300...2500, step: 50)
-                }
-                if c.config.pickerGesture == .wiggle {
-                    Stepper("Wiggle window: \(Int(c.config.wiggleWindowMs)) ms", value: $c.config.wiggleWindowMs, in: 200...1000, step: 50)
-                    Text("Experimental. The buds send at most ~3 clicks per second, so windows under ~300 ms can't trigger.")
-                        .font(.caption).foregroundStyle(.secondary)
-                }
-                Stepper("Restore volume after \(Int(c.config.restoreIdleMs)) ms idle", value: $c.config.restoreIdleMs, in: 500...5000, step: 250)
-                Stepper("…or within \(c.config.restoreEdgeSteps) clicks of either end", value: $c.config.restoreEdgeSteps, in: 1...4)
-                TextField("Only for outputs named", text: $c.config.deviceMatch)
-                Stepper(c.config.autoPassthroughMinutes > 0
-                        ? "Back to Passthrough after \(Int(c.config.autoPassthroughMinutes)) min idle"
-                        : "Never return to Passthrough automatically",
-                        value: $c.config.autoPassthroughMinutes, in: 0...60, step: 1)
-                Toggle("Hold Now Playing with silent audio", isOn: $c.config.keepNowPlaying)
-                Toggle("Feedback sounds", isOn: $c.config.feedbackSounds)
-            }
-            Section("Permissions") {
-                LabeledContent("Accessibility", value: c.accessibilityTrusted ? "Allowed" : "Not allowed")
-                if !c.accessibilityTrusted {
-                    Button("Allow Accessibility…") { c.requestAccessibility() }
-                }
-            }
+extension ModeID {
+    /// Menu bar symbol for each mode.
+    var symbol: String {
+        switch self {
+        case .passthrough: return "dial.low"
+        case .scroll: return "arrow.up.arrow.down"
+        case .scrub: return "film"
+        case .comboLock: return "lock"
+        case .macro: return "command"
+        case .focusTimer: return "timer"
         }
-        .formStyle(.grouped)
-        .frame(width: 460)
-        .onAppear { NSApp.activate() }
     }
 }

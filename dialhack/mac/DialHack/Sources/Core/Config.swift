@@ -1,7 +1,7 @@
 import Foundation
 
 enum ModeID: String, Codable, CaseIterable, Equatable {
-    case passthrough, scroll, scrub, comboLock, macro
+    case passthrough, scroll, scrub, comboLock, macro, focusTimer
 
     var title: String {
         switch self {
@@ -10,6 +10,7 @@ enum ModeID: String, Codable, CaseIterable, Equatable {
         case .scrub: return "Scrub"
         case .comboLock: return "Combo Lock"
         case .macro: return "Macro"
+        case .focusTimer: return "Focus Timer"
         }
     }
 
@@ -20,6 +21,7 @@ enum ModeID: String, Codable, CaseIterable, Equatable {
         case .scrub: return "Turn: ←/→ seek · Press: play/pause · Double: +10 s"
         case .comboLock: return "Turn: digit · Press: enter · Double: reset"
         case .macro: return "Turn: choose · Press: run · Double: cancel"
+        case .focusTimer: return "Turn: minutes · Press: start/pause · Double: I got distracted"
         }
     }
 
@@ -46,6 +48,17 @@ enum PickerGesture: String, Codable, CaseIterable, Equatable {
     }
 }
 
+/// When a dial mode puts the volume back after a turn.
+enum RestoreTiming: String, Codable, CaseIterable, Equatable {
+    /// Right after every click: the volume barely moves. Very fast spins can lose clicks (Phase 0).
+    case everyClick
+    /// After the dial has been still for `restoreIdleMs` (or near either end): no clicks lost, but the
+    /// volume audibly drifts while you turn.
+    case whenIdle
+
+    var title: String { self == .everyClick ? "After every click" : "When the dial stops" }
+}
+
 /// User configuration, persisted as JSON in ~/Library/Application Support/DialHack/config.json.
 struct DialConfig: Codable, Equatable {
     var startMode: ModeID = .passthrough
@@ -61,13 +74,16 @@ struct DialConfig: Codable, Equatable {
     var wiggleWindowMs: Double = 400
     /// Mode picker closes itself after this long without input.
     var pickerTimeoutMs: Double = 6000
-    /// Lazy restore: snap volume back to 50% after this much dial idle time…
+    var restoreTiming: RestoreTiming = .everyClick
+    /// whenIdle: snap the volume back after this much dial idle time…
     var restoreIdleMs: Double = 1500
     /// …or immediately when within this many 1/16 steps of either end.
     var restoreEdgeSteps: Int = 2
     /// Claim Now Playing with silent audio while a hijacking mode is active.
     var keepNowPlaying: Bool = true
     var feedbackSounds: Bool = true
+    var focusMinutes: Int = 25
+    var showInDock: Bool = true
     /// Drop back to Passthrough after this many minutes without dial input in a hijacking mode
     /// (0 = never). Guards against stray inputs: in-ear detection sends PAUSE, and the dial gets
     /// nudged in a pocket (findings.md, "Stray inputs").
@@ -102,9 +118,12 @@ struct DialConfig: Codable, Equatable {
         wiggleWindowMs = (try? c.decode(Double.self, forKey: .wiggleWindowMs)) ?? d.wiggleWindowMs
         pickerTimeoutMs = (try? c.decode(Double.self, forKey: .pickerTimeoutMs)) ?? d.pickerTimeoutMs
         restoreIdleMs = (try? c.decode(Double.self, forKey: .restoreIdleMs)) ?? d.restoreIdleMs
+        restoreTiming = (try? c.decode(RestoreTiming.self, forKey: .restoreTiming)) ?? d.restoreTiming
         restoreEdgeSteps = (try? c.decode(Int.self, forKey: .restoreEdgeSteps)) ?? d.restoreEdgeSteps
         keepNowPlaying = (try? c.decode(Bool.self, forKey: .keepNowPlaying)) ?? d.keepNowPlaying
         feedbackSounds = (try? c.decode(Bool.self, forKey: .feedbackSounds)) ?? d.feedbackSounds
+        focusMinutes = (try? c.decode(Int.self, forKey: .focusMinutes)) ?? d.focusMinutes
+        showInDock = (try? c.decode(Bool.self, forKey: .showInDock)) ?? d.showInDock
         autoPassthroughMinutes = (try? c.decode(Double.self, forKey: .autoPassthroughMinutes)) ?? d.autoPassthroughMinutes
         deviceMatch = (try? c.decode(String.self, forKey: .deviceMatch)) ?? d.deviceMatch
         if pickerModes.isEmpty { pickerModes = d.pickerModes }

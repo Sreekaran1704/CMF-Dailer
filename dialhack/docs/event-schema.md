@@ -15,6 +15,17 @@ Notes:
 - `raw` on macOS is one of `VOLUME_UP`, `VOLUME_DOWN`, `PLAY`, `PAUSE`, `TOGGLEPLAYPAUSE`, `NEXT`, `PREV`.
 - `latency_ms` is the time from capture to dispatch inside the app. For `PRESS_2`, it includes the 1 s mode-picker hold.
 - `steps` appears only when one volume change carried more than one click.
+- `mode` is the mode the input happened in (before any mode change it caused).
+- `action: picker_turn` is the turn that completed "double press, then turn"; it opens the picker instead of acting.
+
+## Self-report labels (macOS `labels.jsonl`)
+
+```json
+{"ts": "...", "platform": "mac", "label": "distracted|focused|stressed|bored",
+ "source": "focus_timer_tag|focus_session_end", "focus_session_id": "uuid",
+ "start": "...", "end": "...", "session_id": "uuid"}
+```
+`start`/`end` appear only on `focus_session_end` (the span the rating covers).
 
 ## Phase 0 sniffer log
 

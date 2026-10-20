@@ -13,6 +13,22 @@ import numpy as np
 import pandas as pd
 
 ROTATIONS = ("ROTATE_CW", "ROTATE_CCW")
+
+#: Deliberate control inputs, not fidgeting: mode picking and the Focus Timer's own buttons (start,
+#: pause, the "distracted" tag, rating turns). They're dropped from features; otherwise the classifier
+#: would learn "has a tag press" = distracted (label leakage). Focus Timer turns while running
+#: ("focus_fidget") stay: that's exactly the fidgeting we want to measure.
+def is_control(action) -> bool:
+    a = str(action or "")
+    if a == "focus_fidget":
+        return False
+    return a.startswith(("focus_", "open_mode_picker", "picker_", "mode:"))
+
+
+def fidget_events(events: pd.DataFrame) -> pd.DataFrame:
+    if events.empty or "action" not in events:
+        return events
+    return events[~events["action"].map(is_control)]
 PRESSES = ("PRESS_1", "PRESS_2", "PRESS_3")
 
 #: Numeric features used for clustering / anomaly detection / classification.
@@ -76,19 +92,32 @@ def _window_row(ws: pd.Timestamp, g: pd.DataFrame, minutes: float, burst_gap_s: 
     }
 
 
+def _empty_row(ws: pd.Timestamp, minutes: float) -> dict:
+    """A window with no fidgeting at all (kept when it carries a label, e.g. a calm focus session)."""
+    return {"window_start": ws, "minutes": minutes, "n_events": 0, "n_rotations": 0, "n_cw": 0, "n_ccw": 0,
+            "n_presses": 0, "n_press1": 0, "n_press2": 0, "n_picker": 0, "rotations_per_min": 0.0, "reversals": 0,
+            "reversal_rate": 0.0, "n_bursts": 0, "mean_burst_size": 0.0, "max_burst_size": 0, "iet_median_s": np.nan,
+            "iet_p90_s": np.nan, "iet_cv": np.nan, "max_idle_s": minutes * 60.0, "press_ratio": 0.0,
+            "active_span_s": 0.0, "dominant_mode": None, "platforms": ""}
+
+
 def compute_windows(events: pd.DataFrame, window_minutes: float = 5, burst_gap_s: float = 2.0,
-                    stray_max_events: int = 2, tz: str | None = None) -> pd.DataFrame:
-    """Aggregate events into fixed windows. `tz` sets the timezone for hour/weekday (default: local)."""
-    if events.empty:
+                    stray_max_events: int = 2, tz: str | None = None, include=None) -> pd.DataFrame:
+    """Aggregate events into fixed windows. `tz` sets the timezone for hour/weekday (default: local).
+    `include`: extra window starts to emit even with no events (labeled windows)."""
+    include = sorted(set(pd.to_datetime(list(include or []), utc=True)))
+    if events.empty and not include:
         return pd.DataFrame(columns=WINDOW_COLUMNS)
-    ev = events.copy()
+    ev = events.copy() if not events.empty else pd.DataFrame(columns=["ts", "event", "mode", "platform", "steps"])
     ev["ts"] = pd.to_datetime(ev["ts"], utc=True)
     if "steps" not in ev:
         ev["steps"] = 1
     freq = f"{int(window_minutes * 60)}s"
     ev["window_start"] = ev["ts"].dt.floor(freq)
     rows = [_window_row(ws, g, window_minutes, burst_gap_s) for ws, g in ev.groupby("window_start", sort=True)]
-    df = pd.DataFrame(rows)
+    seen = {r["window_start"] for r in rows}
+    rows += [_empty_row(ws, window_minutes) for ws in include if ws not in seen]
+    df = pd.DataFrame(rows).sort_values("window_start").reset_index(drop=True)
     local = df["window_start"].dt.tz_convert(tz) if tz else df["window_start"].dt.tz_convert(_local_tz())
     df["hour"] = local.dt.hour
     df["weekday"] = local.dt.dayofweek

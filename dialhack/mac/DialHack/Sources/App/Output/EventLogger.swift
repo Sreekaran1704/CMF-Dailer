@@ -10,6 +10,7 @@ final class EventLogger {
     let sessionId = UUID().uuidString
     private let q = DispatchQueue(label: "dialhack.log")
     private var handle: FileHandle?
+    private var labelHandle: FileHandle?
     private let iso: ISO8601DateFormatter = {
         let f = ISO8601DateFormatter()
         f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
@@ -22,6 +23,31 @@ final class EventLogger {
         if !FileManager.default.fileExists(atPath: url.path) { FileManager.default.createFile(atPath: url.path, contents: nil) }
         handle = try? FileHandle(forWritingTo: url)
         handle?.seekToEndOfFile()
+    }
+
+    /// Self-report labels (Focus Timer) go to their own file, labels.jsonl, with their source kept.
+    func logLabel(_ r: LabelRecord) {
+        q.async {
+            var obj: [String: Any] = [
+                "ts": self.iso.string(from: r.ts),
+                "platform": "mac",
+                "label": r.label,
+                "source": r.source,
+                "focus_session_id": r.focusSession,
+                "session_id": self.sessionId,
+            ]
+            if let s = r.start { obj["start"] = self.iso.string(from: s) }
+            if let e = r.end { obj["end"] = self.iso.string(from: e) }
+            guard let data = try? JSONSerialization.data(withJSONObject: obj, options: [.sortedKeys]) else { return }
+            if self.labelHandle == nil {
+                let url = self.url.deletingLastPathComponent().appendingPathComponent("labels.jsonl")
+                if !FileManager.default.fileExists(atPath: url.path) { FileManager.default.createFile(atPath: url.path, contents: nil) }
+                self.labelHandle = try? FileHandle(forWritingTo: url)
+                self.labelHandle?.seekToEndOfFile()
+            }
+            self.labelHandle?.write(data)
+            self.labelHandle?.write(Data([0x0A]))
+        }
     }
 
     func log(raw: RawInput, event: String, mode: ModeID, action: String, latencyMs: Double, steps: Int = 1) {

@@ -2,7 +2,18 @@
 
 ## Phase 1 app (`DialHack/`)
 
-A menu bar app (no Dock icon) that turns the dial into an input device.
+A Mac app with a window (Dock icon, can be hidden in Settings) plus a menu bar item, that turns the dial into an input device.
+
+**Design:** a comic book. The window is a cover (yellow sunburst, halftone dots, the "DIALHACK" logo, an issue box, and a starburst showing the current mode), chapter tabs, and a live strip that shows every dial input as a sound effect (TIK! TAK! CLIK!). Pages are chapters with splash headers and speech bubbles. Content sits in panels with thick ink borders and hard shadows, with yellow narration boxes and stickers. The HUD pops up as a comic panel. Fonts are Bangers and Comic Neue, bundled in `Resources/Fonts` (SIL OFL). Tokens and components live in `Sources/App/UI/Comic.swift`. Both themes are printed on textured paper (seeded grain, fibres and mottling tiled from `PaperTexture`, plus a soft vignette). Dark mode is warm, lamp-lit dark paper with cream lettering and near-black ink lines, and big colour fills are knocked back so they don't glow. Chart colours were checked with the data-viz validator in both modes: clusters use blue, orange and magenta, and the timeline uses blue and red. The app icon is drawn by `swift Tools/make_icon.swift Resources/AppIcon.icns Resources/Fonts/Bangers-Regular.ttf`. `DialHack --snapshot <dir> [--data-dir <dir>]` captures every page in both themes, scrolling down each page.
+
+**The window** (menu bar → Open DialHack…, or click the Dock icon):
+- **Dial:** the current mode, a mode switcher, an on-screen dial that turns with yours, live input, and status. Status covers the output device, **where your presses go right now**, Accessibility, and a "Check my presses…" test.
+- **Focus:** the Focus Timer with buttons (start, pause, "I got distracted", rate), plus recent sessions.
+- **The Log (Activity):** today's counts and a searchable log of every dial event.
+- **Insights:** native charts and models. Turning intensity, time-of-day heatmap, clusters, restless windows, labels by source, the classifier vs a majority baseline (time-ordered folds; "not enough data" below 30 labels), and labeling windows yourself. It's a Swift port of `analytics/` with identical window features (`Tests/parity.py` checks this); the classifier is k-NN instead of a random forest.
+- **Settings:** everything, plus Show in Dock, Launch at login, and the data folder.
+
+**Presses and "Now Playing":** macOS sends dial presses to the app that most recently played media. In dial modes DialHack plays silence to hold that spot. That audio now restarts itself if the route changes (it used to die silently, so presses went to the browser). If another app is actively playing, the window says so and names it.
 
 ```bash
 ./DialHack/build.sh           # runs the Core tests, then builds .build/DialHack.app
@@ -21,12 +32,17 @@ A menu bar app (no Dock icon) that turns the dial into an input device.
   | Scrub | ←/→ | space | L (+10 s) |
   | Combo Lock | pick digit | enter digit | reset |
   | Macro | choose macro | run | cancel |
+  | Focus Timer | set minutes (idle); just logged while running | start / pause | "I got distracted" tag (paused: end early) |
 
-- **Volume:** in every mode except Passthrough, the volume is parked at 50% and restored lazily: after 1.5 s of dial idle, or right away near either end. When you leave the mode or quit, your own volume comes back.
+- **Focus Timer:** the menu bar shows the countdown. At the end, a rating list appears (focused / distracted / stressed / bored): turn to pick, press to save, double-press to skip. Tags and ratings go to `labels.jsonl` and become analytics labels. Auto-return to Passthrough never interrupts a running session.
+
+- **Volume:** macOS changes the volume before DialHack sees a click, so it can't block the change, only undo it. In every mode except Passthrough, DialHack keeps the volume at **your own level** (nudged at most 3 clicks away from silent or max, so the dial can turn both ways) and, by default, **puts it back right after every click**. You may hear a brief blip. Settings → "Put the volume back" → "When the dial stops" instead lets the volume drift while you turn and restores it after 1.5 s idle; that never loses clicks on very fast spins. Leaving the mode or quitting restores your exact volume.
 - **Feedback:** an on-screen HUD and a system sound on every mode change.
 - **Safety:** after 5 minutes without dial input, any mode drops back to Passthrough (adjustable in Settings). This guards against in-ear-detection pauses and dial nudges in a pocket.
 - **Status:** `~/Library/Application Support/DialHack/status.json` shows the current mode, output device, and whether Accessibility is granted.
-- **Logs:** every recognized input goes to `~/Library/Application Support/DialHack/events.jsonl`, in the schema in `docs/event-schema.md`.
+- **Logs:** every recognized dial input goes to `~/Library/Application Support/DialHack/events.jsonl` (schema in `docs/event-schema.md`), in every mode including Passthrough, under the mode it happened in. The turn that opens the mode picker is logged too (`action: picker_turn`). DialHack can't see presses that go to another playing app, and it can't tell keyboard volume/media keys from the dial while the buds are the output.
+- **Visual check without permissions:** `.build/DialHack.app/Contents/MacOS/DialHack --snapshot <dir> [--data-dir <dir>]` captures the app's own window for every section, light and dark, then quits. Translucent sidebars and the window background don't appear in these captures.
+- **Testing without the dial:** launch with `--accept-simulated-input`, then post a `dev.dialhack.simulate` distributed notification with `PLAY`, `NEXT`, `VOLUME_UP` and so on. This is off unless that flag is given.
 - **Settings:** in the menu (Settings…) or `config.json` in the same folder. Macros are edited there: `shortcut`, `openApp` or `shell`.
 
 **Permissions**
@@ -43,7 +59,9 @@ A menu bar app (no Dock icon) that turns the dial into an input device.
 Sources/Core/      pure logic, unit tested: Events, GestureRecognizer (normalizer), ModeEngine, VolumeTracker, Config
 Sources/App/Capture/  VolumeCapture (CoreAudio + lazy restore), MediaKeyCapture (MPRemoteCommandCenter)
 Sources/App/Output/   ActionExecutor (CGEvent), HUD, EventLogger
-Sources/App/          Coordinator (wiring), DialHackApp (menu bar + settings)
+Sources/Core/Insights/  native analytics (log reading, features, labels, k-means, PCA, isolation forest, k-NN)
+Sources/App/UI/       the window: Dial, Focus, Activity, Insights, Settings; Snapshot (self-capture check)
+Sources/App/          Coordinator (wiring), DialHackApp (window + menu bar scenes)
 Tests/main.swift      headless Core tests
 ```
 

@@ -45,7 +45,7 @@ final class GestureRecognizer {
             let step = raw == .volumeUp ? 1 : -1
             if let p = pending {
                 pending = nil
-                out.append(Recognized(gesture: .openModePicker(initialStep: step), raw: p.raw, captureMs: p.at))
+                out.append(Recognized(gesture: .openModePicker(initialStep: step), raw: p.raw, captureMs: p.at, consumedTurn: raw))
             } else {
                 out.append(Recognized(gesture: .event(step > 0 ? .rotateCW : .rotateCCW), raw: raw, captureMs: t))
                 if pickerGesture == .wiggle && !suppressWiggle {

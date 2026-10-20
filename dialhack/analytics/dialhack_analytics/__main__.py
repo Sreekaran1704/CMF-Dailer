@@ -8,12 +8,22 @@ from pathlib import Path
 
 import pandas as pd
 
-from . import features, ingest, model, paths, synth
+from . import ingest, model, paths, pipeline, synth
 
 
-def load_labels(db: Path) -> pd.DataFrame:
-    p = paths.labels_path_for(db)
-    return pd.read_csv(p) if p.exists() else pd.DataFrame(columns=["window_start", "label"])
+def print_classifier(rep: model.ClassifierReport | None) -> None:
+    if rep is None:
+        return
+    print(f"\nLabels: {rep.n_labeled} labeled windows {rep.class_counts}")
+    if rep.status != "ok":
+        print("Classifier:", rep.reason)
+        return
+    print(f"Classifier ({len(rep.folds)} time-ordered folds, classes {rep.classes_used}):")
+    print(f"  accuracy           model {rep.model_accuracy:.0%}  vs  majority baseline {rep.baseline_accuracy:.0%}")
+    print(f"  balanced accuracy  model {rep.model_balanced:.0%}  vs  majority baseline {rep.baseline_balanced:.0%}"
+          + ("" if rep.beats_baseline else "   ← does NOT beat the baseline"))
+    if rep.reason:
+        print(" ", rep.reason)
 
 
 def cmd_ingest(a):
@@ -23,9 +33,8 @@ def cmd_ingest(a):
 
 
 def cmd_summary(a):
-    ev = ingest.load_events(Path(a.db))
-    w = features.compute_windows(ev, window_minutes=a.window)
-    r = model.analyze(w, include_stray=a.include_stray, labels=load_labels(Path(a.db)))
+    ev, r = pipeline.build(Path(a.db), window_minutes=a.window, include_stray=a.include_stray)
+    w = r.windows
     print(f"{len(ev)} events, {len(w)} windows of {a.window} min ({int(w['likely_stray'].sum()) if len(w) else 0} likely stray)")
     if r.k:
         print(f"Clusters: k={r.k}, silhouette {r.silhouette:.2f}")
@@ -34,8 +43,7 @@ def cmd_summary(a):
     if rw["restless"].any():
         print("\nUnusually restless windows:")
         print(rw[rw["restless"]][["window_start", "rotations_per_min", "reversal_rate", "anomaly_score"]].to_string(index=False))
-    if r.classifier_accuracy is not None:
-        print(f"\nClassifier: {r.classifier_accuracy:.0%} cross-validated accuracy ({r.classifier_folds} folds)")
+    print_classifier(r.classifier)
     for n in r.notes:
         print("note:", n)
 
@@ -45,14 +53,13 @@ def cmd_make_demo(a):
     src = synth.write_jsonl(df, paths.DATA_DIR / "demo-events.jsonl")
     if paths.DEMO_DB_PATH.exists():
         paths.DEMO_DB_PATH.unlink()
-    ingest.ingest([src], db_path=paths.DEMO_DB_PATH)
-    truth = synth.window_truth(df)
-    truth = truth[truth["truth"].isin(synth.REGIMES)]
-    demo_labels = truth.sample(frac=0.3, random_state=a.seed).rename(columns={"truth": "label"})
-    demo_labels["label"] = demo_labels["label"].map({"focused": "focused", "restless": "stressed", "bored": "bored"})
-    demo_labels.to_csv(paths.DEMO_LABELS_PATH, index=False)
+    lsrc = synth.write_label_jsonl(synth.focus_labels(df, seed=a.seed), paths.DATA_DIR / "demo-labels.jsonl")
+    ingest.ingest([src, lsrc], db_path=paths.DEMO_DB_PATH)
+    dash = synth.dashboard_labels(df, seed=a.seed)
+    dash.to_csv(paths.DEMO_LABELS_PATH, index=False)
+    n_lab = len(ingest.load_label_events(paths.DEMO_DB_PATH))
     print(f"Demo: {len(df)} synthetic events over {a.days} days → {paths.DEMO_DB_PATH} "
-          f"({len(demo_labels)} pre-labeled windows in {paths.DEMO_LABELS_PATH.name})")
+          f"({n_lab} Focus Timer labels, {len(dash)} dashboard labels)")
 
 
 def cmd_dashboard(a):

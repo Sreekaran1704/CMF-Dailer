@@ -50,6 +50,14 @@ final class VolumeTracker {
     /// Volume level in 1/16 steps (0...16).
     static func level(_ v: Float) -> Int { Int((v * stepsPerRange).rounded()) }
 
+    /// Where a dial mode parks the volume: the user's own level, snapped to the 1/16 grid and kept at
+    /// least `headroom` clicks away from silent and max so the dial can turn both ways.
+    static func parkLevel(for v: Float, headroom: Int = 3) -> Float {
+        let n = Int(stepsPerRange)
+        let l = min(max(level(v), headroom), n - headroom)
+        return Float(l) / stepsPerRange
+    }
+
     /// Lazy restore's edge rule: restore now if within `edgeSteps` of either end.
     static func nearEdge(_ v: Float, edgeSteps: Int) -> Bool {
         let l = level(v)

@@ -37,7 +37,9 @@ do {
 do {
     let g = GestureRecognizer(pickerWindowMs: 1000)
     _ = g.feed(.nextTrack, at: 0)
-    check(gestures(g.feed(.volumeDown, at: 600)) == [.openModePicker(initialStep: -1)], "double press + turn → picker")
+    let pick = g.feed(.volumeDown, at: 600)
+    check(gestures(pick) == [.openModePicker(initialStep: -1)], "double press + turn → picker")
+    check(pick.first?.consumedTurn == .volumeDown && pick.first?.raw == .nextTrack, "picker keeps the consumed turn for logging")
     check(gestures(g.feed(.volumeUp, at: 900)) == [.event(.rotateCW)], "later turns are plain rotations")
 }
 
@@ -115,6 +117,7 @@ do {
     check(c.pickerWindowMs == 500, "default picker window is 500 ms")
     check(c.wiggleWindowMs == 400, "default wiggle window is 400 ms")
     check(c.autoPassthroughMinutes == 5, "auto-passthrough defaults to 5 min")
+    check(c.restoreTiming == .everyClick, "volume goes back after every click by default")
     c.pickerGesture = .wiggle
     let data = try! JSONEncoder().encode(c)
     check((try! JSONDecoder().decode(DialConfig.self, from: data)).pickerGesture == .wiggle, "wiggle round-trips")
@@ -150,7 +153,7 @@ do {
     _ = e.handle(.event(.rotateCCW)); _ = e.handle(.event(.rotateCCW)) // scrub(2) → passthrough(0)
     _ = e.handle(.event(.rotateCCW)) // wraps → macro(4)
     _ = e.handle(.event(.press1))
-    check(e.mode == .macro, "picker wraps around")
+    check(e.mode == ModeID.allCases.last, "picker wraps around")
 }
 
 do {
@@ -193,6 +196,93 @@ do {
     check(e.handle(.event(.press1)).name == "run_macro:\(DialConfig.defaultMacros.last!.name)", "wraps backwards")
 }
 
+// MARK: FocusTimer
+
+func labels(_ out: EngineOutput) -> [LabelRecord] {
+    out.actions.compactMap { if case let .label(r) = $0 { return r } else { return nil } }
+}
+
+do {
+    var cfg = DialConfig()
+    cfg.startMode = .focusTimer
+    cfg.focusMinutes = 25
+    let e = ModeEngine(config: cfg)
+    let t0 = Date(timeIntervalSince1970: 1_800_000_000)
+    _ = e.handle(.event(.rotateCCW), now: t0)
+    check(e.focus.minutes == 20, "turn sets length in 5-min steps")
+    for _ in 0..<10 { _ = e.handle(.event(.rotateCCW), now: t0) }
+    check(e.focus.minutes == 5, "length floors at 5 min")
+    _ = e.handle(.event(.rotateCW), now: t0)   // 10 min
+    check(e.handle(.event(.press2), now: t0).name == "focus_idle" && !e.focus.isActive, "double press does nothing before start")
+
+    let start = e.handle(.event(.press1), now: t0)
+    check(start.name == "focus_start" && e.focus.endsAt == t0.addingTimeInterval(600), "press starts a 10-min session")
+    check(e.handle(.event(.rotateCW), now: t0 + 5).name == "focus_fidget", "turns while running are just fidgeting")
+    check(e.focus.minutes == 10, "fidgeting doesn't change the length")
+
+    let tag = e.handle(.event(.press2), now: t0 + 60)
+    let tl = labels(tag)
+    check(tl.count == 1 && tl[0].label == "distracted" && tl[0].source == LabelRecord.tagSource && tl[0].ts == t0 + 60,
+          "double press = distracted tag, timestamped")
+    check(tl[0].focusSession == e.focus.sessionId && !e.focus.sessionId.isEmpty, "tag carries the focus session id")
+
+    _ = e.handle(.event(.press1), now: t0 + 120)   // pause with 480 s left
+    check(e.focus.remaining(at: t0 + 300) == 480, "paused time doesn't run")
+    _ = e.handle(.event(.press1), now: t0 + 300)   // resume → ends at t0+780
+    check(e.focus.endsAt == t0 + 780, "resume keeps the remaining time")
+    check(e.focusExpired(now: t0 + 700).actions.isEmpty, "not expired early")
+
+    let done = e.focusExpired(now: t0 + 781)
+    check(done.name == "focus_done", "expiry → rating")
+    _ = e.handle(.event(.rotateCW), now: t0 + 790)   // focused → distracted
+    _ = e.handle(.event(.rotateCW), now: t0 + 791)   // → stressed
+    let rated = labels(e.handle(.event(.press1), now: t0 + 792))
+    check(rated.count == 1 && rated[0].label == "stressed" && rated[0].source == LabelRecord.sessionSource, "rating saved as session label")
+    check(rated[0].start == t0 && rated[0].end == t0 + 780, "session label spans start → end")
+    check(!e.focus.isActive, "back to idle after rating")
+
+    _ = e.handle(.event(.press1), now: t0 + 1000)
+    _ = e.focusExpired(now: t0 + 2000)
+    let viaApp = labels(e.focusRate("bored", now: t0 + 2001))
+    check(viaApp.count == 1 && viaApp[0].label == "bored" && viaApp[0].source == LabelRecord.sessionSource, "one-click rating from the window")
+    check(e.focusRate("bored", now: t0 + 2002).actions.isEmpty, "rating only works when a rating is pending")
+}
+
+do {
+    var cfg = DialConfig()
+    cfg.startMode = .focusTimer
+    let e = ModeEngine(config: cfg)
+    let t0 = Date(timeIntervalSince1970: 1_800_000_000)
+    _ = e.handle(.event(.press1), now: t0)
+    _ = e.handle(.event(.press1), now: t0 + 10)        // pause
+    check(e.handle(.event(.press2), now: t0 + 20).name == "focus_end_early", "double press while paused ends early")
+    check(labels(e.handle(.event(.press2), now: t0 + 21)).isEmpty && !e.focus.isActive, "skipping the rating saves nothing")
+
+    _ = e.handle(.event(.press1), now: t0 + 100)
+    _ = e.setMode(.scroll)
+    check(!e.focus.isActive, "leaving the mode abandons the session")
+    _ = e.setMode(.focusTimer)
+    check(e.focusExpired(now: t0 + 100_000).actions.isEmpty, "abandoned session never asks for a rating")
+}
+
+// MARK: Insights IO
+
+do {
+    let iso = ISO8601DateFormatter()
+    iso.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+    for t in ["2026-10-20T02:08:11.264Z", "2024-02-29T23:59:59.999Z", "1999-12-31T00:00:00.000Z", "2026-01-01T00:00:00.001Z"] {
+        check(InsightsIO.parseDate(t) == iso.date(from: t), "fast date parse matches formatter: \(t)")
+    }
+    check(InsightsIO.parseDate("2026-10-20T02:08:11Z") == ISO8601DateFormatter().date(from: "2026-10-20T02:08:11Z"), "no-millis format")
+    check(InsightsIO.parseDate("2026-10-20T02:08:11.264+02:00") != nil, "other formats fall back to the formatter")
+    check(InsightsIO.parseDate("garbage") == nil, "garbage → nil")
+
+    let url = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("dh-\(UUID().uuidString).jsonl")
+    try? "{\"a\":1}\nnot json\n\n{\"a\":2}\n".write(to: url, atomically: true, encoding: .utf8)
+    check(InsightsIO.jsonLines(url).count == 2, "malformed lines are skipped, good ones kept")
+    try? FileManager.default.removeItem(at: url)
+}
+
 // MARK: VolumeTracker
 
 do {
@@ -207,6 +297,10 @@ do {
     t.expectSelf(target: 0.5, at: 1000)
     check(t.feed(0.625, at: 2000) == .steps(direction: 1, count: 2, from: 0.5, to: 0.625), "two-step jump, outside window")
     check(VolumeTracker.level(0.5) == 8, "level")
+    check(VolumeTracker.parkLevel(for: 0.25) == 0.25, "park at the user's own level (4/16)")
+    check(VolumeTracker.parkLevel(for: 0.3) == 0.3125, "park snaps to the 1/16 grid")
+    check(VolumeTracker.parkLevel(for: 0.05) == 0.1875 && VolumeTracker.parkLevel(for: 0) == 0.1875, "keep 3 clicks above silent")
+    check(VolumeTracker.parkLevel(for: 1.0) == 0.8125, "keep 3 clicks below max")
     check(VolumeTracker.nearEdge(0.125, edgeSteps: 2) && VolumeTracker.nearEdge(0.875, edgeSteps: 2), "edges")
     check(!VolumeTracker.nearEdge(0.5, edgeSteps: 2) && !VolumeTracker.nearEdge(0.8125, edgeSteps: 2), "not edges")
 }

@@ -11,22 +11,27 @@ final class ModeEngine {
     private(set) var mode: ModeID
     private(set) var pickerOpen = false
     var config: DialConfig {
-        didSet { if !config.pickerModes.contains(mode) && mode != .passthrough { mode = config.startMode } }
+        didSet {
+            if !config.pickerModes.contains(mode) && mode != .passthrough { mode = config.startMode }
+            if !focus.isActive { focus.minutes = config.focusMinutes }
+        }
     }
 
     private var pickerIndex = 0
     private var comboEntered: [Int] = []
     private var comboDigit = 0
     private var macroIndex = 0
+    private(set) var focus: FocusTimer
 
     init(config: DialConfig) {
         self.config = config
         self.mode = config.startMode
+        self.focus = FocusTimer(minutes: config.focusMinutes)
     }
 
     // MARK: - entry points
 
-    func handle(_ gesture: Gesture) -> EngineOutput {
+    func handle(_ gesture: Gesture, now: Date = Date()) -> EngineOutput {
         switch gesture {
         case .openModePicker(let step):
             // A second hold while the picker is open cancels it.
@@ -43,6 +48,7 @@ final class ModeEngine {
             case .scrub: return scrub(e)
             case .comboLock: return combo(e)
             case .macro: return macro(e)
+            case .focusTimer: return focus.input(e, now: now)
             }
         }
     }
@@ -53,7 +59,20 @@ final class ModeEngine {
         return EngineOutput(actions: [.hud(.hide)], name: "picker_timeout")
     }
 
+    /// From the app window: rate a finished focus session directly.
+    func focusRate(_ label: String, now: Date = Date()) -> EngineOutput {
+        guard mode == .focusTimer else { return EngineOutput() }
+        return focus.rate(label, now: now)
+    }
+
+    /// The coordinator calls this when the focus timer reaches zero.
+    func focusExpired(now: Date = Date()) -> EngineOutput {
+        guard mode == .focusTimer else { return EngineOutput() }
+        return focus.expire(now: now)
+    }
+
     func setMode(_ m: ModeID) -> EngineOutput {
+        if mode == .focusTimer && m != .focusTimer { focus.abandon() }
         mode = m
         pickerOpen = false
         comboEntered = []

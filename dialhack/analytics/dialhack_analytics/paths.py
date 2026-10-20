@@ -7,15 +7,19 @@ DATA_DIR = ANALYTICS_DIR / "data"
 DB_PATH = DATA_DIR / "telemetry.duckdb"
 #: Synthetic demo data (`python -m dialhack_analytics make-demo`), never mixed with real data.
 DEMO_DB_PATH = DATA_DIR / "demo.duckdb"
-#: Optional window labels you add ("focused" / "stressed" / "bored"), one CSV per database.
-LABELS_PATH = DATA_DIR / "labels.csv"
+#: Shared with the DialHack app (it can't read ~/Documents), so these live in Application Support.
+APP_SUPPORT = Path.home() / "Library/Application Support/DialHack"
+#: Window labels you set by hand (in the app or the dashboard).
+LABELS_PATH = APP_SUPPORT / "dashboard_labels.csv"
 DEMO_LABELS_PATH = DATA_DIR / "demo-labels.csv"
 
 #: Session ids to drop at ingest (scripted tests, not real use). One id per line, '#' comments allowed.
-EXCLUDE_PATH = DATA_DIR / "exclude_sessions.txt"
+EXCLUDE_PATH = APP_SUPPORT / "exclude_sessions.txt"
 
 #: Where the macOS app writes events. Android exports (JSONL) are passed explicitly or dropped in DATA_DIR/inbox.
-MAC_EVENTS = Path.home() / "Library/Application Support/DialHack/events.jsonl"
+MAC_EVENTS = APP_SUPPORT / "events.jsonl"
+#: Focus Timer self-report labels written by the macOS app.
+MAC_LABELS = APP_SUPPORT / "labels.jsonl"
 INBOX_DIR = DATA_DIR / "inbox"
 
 

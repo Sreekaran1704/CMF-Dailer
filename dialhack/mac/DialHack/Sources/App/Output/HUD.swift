@@ -8,6 +8,7 @@ final class HUDModel: ObservableObject {
     @Published var content: HUDContent = .hide
 }
 
+/// The HUD as a comic panel popping onto the screen: ink border, hard shadow, yellow caption, Bangers.
 struct HUDView: View {
     @ObservedObject var model: HUDModel
 
@@ -17,43 +18,64 @@ struct HUDView: View {
             case .hide:
                 EmptyView()
             case let .banner(title, subtitle):
-                VStack(spacing: 6) {
-                    Text(title).font(.system(size: 26, weight: .bold))
-                    Text(subtitle).font(.system(size: 13)).foregroundStyle(.secondary)
+                VStack(spacing: 8) {
+                    Narration(text: "Now on the dial").rotationEffect(.degrees(-2))
+                    SFX(text: title, size: 40, fill: CK.yellow, tilt: -2)
+                    Text(subtitle).font(CK.bodyBold(14)).foregroundStyle(CK.inkSoft).multilineTextAlignment(.center)
                 }
             case let .list(title, items, selected):
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(title).font(.system(size: 12, weight: .semibold)).foregroundStyle(.secondary).padding(.bottom, 4)
+                VStack(alignment: .leading, spacing: 6) {
+                    Narration(text: title).padding(.bottom, 4)
                     ForEach(Array(items.enumerated()), id: \.offset) { i, item in
-                        Text(item)
-                            .font(.system(size: 17, weight: i == selected ? .bold : .regular))
-                            .padding(.horizontal, 10).padding(.vertical, 4)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .background(i == selected ? Color.accentColor.opacity(0.35) : Color.clear,
-                                        in: RoundedRectangle(cornerRadius: 6))
+                        let on = i == selected
+                        HStack(spacing: 10) {
+                            Text(item.uppercased()).font(CK.title(on ? 22 : 17)).tracking(0.6)
+                                .foregroundStyle(on ? CK.onYellow : CK.inkSoft)
+                            Spacer()
+                            if on { Text("PRESS!").font(CK.title(15)).foregroundStyle(CK.red) }
+                        }
+                        .padding(.horizontal, 10).padding(.top, 4).padding(.bottom, 2)
+                        .background(on ? CK.yellow : Color.clear)
+                        .overlay(Rectangle().strokeBorder(on ? CK.onYellow : Color.clear, lineWidth: 2))
+                        .rotationEffect(.degrees(on ? -1 : 0))
                     }
                 }
             case let .combo(entered, length, current):
                 VStack(spacing: 10) {
-                    Text("Combo Lock").font(.system(size: 12, weight: .semibold)).foregroundStyle(.secondary)
+                    Narration(text: "Combo lock")
                     HStack(spacing: 10) {
                         ForEach(0..<length, id: \.self) { i in
-                            Text(i < entered ? "•" : (i == entered ? "\(current)" : "–"))
-                                .font(.system(size: 34, weight: .bold, design: .monospaced))
-                                .frame(width: 36)
-                                .foregroundStyle(i == entered ? Color.accentColor : Color.primary)
+                            Text(i < entered ? "★" : (i == entered ? "\(current)" : "–"))
+                                .font(CK.title(44))
+                                .frame(width: 42)
+                                .foregroundStyle(i == entered ? CK.purple : CK.ink)
                         }
                     }
                 }
             case let .message(text, success):
-                Label(text, systemImage: success ? "checkmark.circle.fill" : "xmark.circle.fill")
-                    .font(.system(size: 22, weight: .bold))
-                    .foregroundStyle(success ? Color.green : Color.red)
+                VStack(spacing: 6) {
+                    SFX(text: success ? "Pow!" : "Bonk!", size: 30, fill: success ? CK.green : CK.red, tilt: -4)
+                    Text(text).font(CK.title(22)).tracking(0.5)
+                }
+            case let .focus(title, seconds, running, tags):
+                VStack(spacing: 6) {
+                    Narration(text: title)
+                    SFX(text: String(format: "%d:%02d", seconds / 60, seconds % 60), size: 52, fill: CK.red, tilt: -2).monospacedDigit()
+                    Text(running ? (tags > 0 ? "\(tags) distraction\(tags == 1 ? "" : "s") noted · double-press to note another"
+                                             : "Double-press if you get distracted")
+                                 : "Press to start")
+                        .font(CK.bodyBold(13)).foregroundStyle(CK.inkSoft)
+                }
             }
         }
-        .padding(22)
-        .frame(minWidth: 260)
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16))
+        .foregroundStyle(CK.ink)
+        .padding(.horizontal, 26).padding(.vertical, 20)
+        .frame(minWidth: 300)
+        .background(alignment: .bottomTrailing) {
+            Halftone(color: CK.blue.opacity(0.16), spacing: 8, minRadius: 0, maxRadius: 2.6).frame(width: 140, height: 80)
+        }
+        .comicPanel(border: 3.5, shadow: 7)
+        .padding(.trailing, 8).padding(.bottom, 8)   // room for the hard shadow inside the panel window
     }
 }
 
@@ -66,7 +88,7 @@ final class HUD {
         p.level = .statusBar
         p.backgroundColor = .clear
         p.isOpaque = false
-        p.hasShadow = true
+        p.hasShadow = false   // the panel draws its own hard comic shadow
         p.ignoresMouseEvents = true
         p.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
         p.contentView = NSHostingView(rootView: HUDView(model: model))

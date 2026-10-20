@@ -2,12 +2,14 @@
 
 - KMeans clustering of fidget windows (k chosen by silhouette), with a 2-D PCA projection for plotting.
 - IsolationForest anomaly scores. "Unusually restless" = anomalous *and* above-median rotation rate.
-- If you've labeled enough windows (focused / stressed / bored), a random forest with cross-validation.
+- With enough labels (dashboard, Focus Timer tags, session ratings): a random forest evaluated on
+  time-ordered folds against a majority-class baseline; "not enough data" below the minimums.
 
 Every function degrades gracefully with little data instead of raising.
 """
 from __future__ import annotations
 
+import warnings
 from dataclasses import dataclass, field
 
 import numpy as np
@@ -15,16 +17,40 @@ import pandas as pd
 from sklearn.cluster import KMeans
 from sklearn.decomposition import PCA
 from sklearn.ensemble import IsolationForest, RandomForestClassifier
-from sklearn.metrics import silhouette_score
-from sklearn.model_selection import StratifiedKFold, cross_val_score
+from sklearn.dummy import DummyClassifier
+from sklearn.metrics import accuracy_score, balanced_accuracy_score, silhouette_score
+from sklearn.model_selection import TimeSeriesSplit
 from sklearn.preprocessing import StandardScaler
 
 from .features import MODEL_FEATURES, model_matrix
 
 MIN_WINDOWS_TO_CLUSTER = 6
 MIN_WINDOWS_FOR_ANOMALIES = 8
-MIN_LABELS = 10
-LABELS = ["focused", "stressed", "bored"]
+#: Below these the classifier reports "not enough data" instead of a score.
+MIN_LABELED = 30
+MIN_PER_CLASS = 5
+MAX_FOLDS = 5
+LABELS = ["focused", "distracted", "stressed", "bored"]
+
+
+@dataclass
+class ClassifierReport:
+    status: str                       # "ok" | "not_enough_data"
+    reason: str = ""
+    n_labeled: int = 0
+    class_counts: dict = field(default_factory=dict)
+    classes_used: list = field(default_factory=list)
+    folds: pd.DataFrame | None = None  # one row per time-ordered fold
+    model_accuracy: float | None = None
+    baseline_accuracy: float | None = None
+    model_balanced: float | None = None
+    baseline_balanced: float | None = None
+
+    @property
+    def beats_baseline(self) -> bool | None:
+        if self.model_balanced is None or self.baseline_balanced is None:
+            return None
+        return self.model_balanced > self.baseline_balanced
 
 
 @dataclass
@@ -33,21 +59,23 @@ class Analysis:
     k: int | None = None
     silhouette: float | None = None
     profiles: pd.DataFrame | None = None
-    classifier_accuracy: float | None = None
-    classifier_folds: int | None = None
+    classifier: ClassifierReport | None = None
     notes: list[str] = field(default_factory=list)
 
 
-def analyze(windows: pd.DataFrame, include_stray: bool = False, labels: pd.DataFrame | None = None,
-            max_k: int = 6, seed: int = 0) -> Analysis:
-    """Adds columns: cluster, pca_x, pca_y, anomaly_score, is_anomaly, restless, label, predicted_label."""
+def analyze(windows: pd.DataFrame, include_stray: bool = False, max_k: int = 6, seed: int = 0) -> Analysis:
+    """Adds: cluster, pca_x, pca_y, anomaly_score, is_anomaly, restless, predicted_label.
+    Uses an optional `label` column (see labels.assign) for the classifier."""
     w = windows.copy()
+    if "label" not in w:
+        w["label"] = None
     for col, default in [("cluster", -1), ("pca_x", np.nan), ("pca_y", np.nan), ("anomaly_score", np.nan),
-                         ("is_anomaly", False), ("restless", False), ("label", None), ("predicted_label", None)]:
+                         ("is_anomaly", False), ("restless", False), ("predicted_label", None)]:
         w[col] = default
     out = Analysis(windows=w)
     if w.empty:
         out.notes.append("No dial events yet.")
+        out.classifier = ClassifierReport("not_enough_data", "No labeled windows yet.")
         return out
 
     mask = np.ones(len(w), bool) if include_stray else ~w["likely_stray"].to_numpy(bool)
@@ -56,7 +84,7 @@ def analyze(windows: pd.DataFrame, include_stray: bool = False, labels: pd.DataF
         out.notes.append(f"{int((~mask).sum())} likely-stray windows (≤ 2 events) excluded from modeling.")
     if len(sub) < MIN_WINDOWS_TO_CLUSTER:
         out.notes.append(f"Clustering needs at least {MIN_WINDOWS_TO_CLUSTER} active windows; have {len(sub)}.")
-        _attach_labels(out, labels)
+        out.classifier = classify(w)
         return out
 
     X = StandardScaler().fit_transform(model_matrix(sub))
@@ -89,34 +117,61 @@ def analyze(windows: pd.DataFrame, include_stray: bool = False, labels: pd.DataF
         out.profiles = prof.round(2)
 
     out.windows = w
-    _attach_labels(out, labels)
+    out.classifier = classify(w)
     return out
 
 
-def _attach_labels(out: Analysis, labels: pd.DataFrame | None) -> None:
-    w = out.windows
-    if labels is None or labels.empty:
-        return
-    lab = labels.dropna(subset=["label"]).copy()
-    lab["window_start"] = pd.to_datetime(lab["window_start"], utc=True)
-    m = dict(zip(lab["window_start"], lab["label"]))
-    w["label"] = w["window_start"].map(m)
-    labeled = w[w["label"].notna()]
-    classes = labeled["label"].value_counts()
-    if len(labeled) < MIN_LABELS or len(classes) < 2:
-        out.notes.append(f"Classifier needs ≥ {MIN_LABELS} labeled windows across ≥ 2 labels; have {len(labeled)} "
-                         f"across {len(classes)}.")
-        return
-    X = model_matrix(w)
-    y = labeled["label"]
-    folds = int(min(5, classes.min()))
-    clf = RandomForestClassifier(n_estimators=300, random_state=0, class_weight="balanced")
-    if folds >= 2:
-        scores = cross_val_score(clf, X.loc[labeled.index], y, cv=StratifiedKFold(folds, shuffle=True, random_state=0))
-        out.classifier_accuracy, out.classifier_folds = float(scores.mean()), folds
-    else:
-        out.notes.append("Every label needs ≥ 2 examples for cross-validation; accuracy not estimated.")
-    clf.fit(X.loc[labeled.index], y)
+def classify(w: pd.DataFrame, seed: int = 0) -> ClassifierReport:
+    """Time-ordered evaluation: every fold trains only on windows *before* its test windows (with one
+    window of gap, so neighbours don't leak), and is scored against a majority-class baseline fit on
+    the same training part. Labeled windows are used whether or not they look stray.
+    Writes `predicted_label` for unlabeled windows into `w` when there's enough data."""
+    labeled = w[w["label"].notna()].sort_values("window_start")
+    counts = labeled["label"].value_counts().to_dict()
+    rep = ClassifierReport("not_enough_data", n_labeled=len(labeled), class_counts=counts)
+    usable = [c for c, n in counts.items() if n >= MIN_PER_CLASS]
+    if len(labeled) < MIN_LABELED or len(usable) < 2:
+        need = []
+        if len(labeled) < MIN_LABELED:
+            need.append(f"{MIN_LABELED} labeled windows (have {len(labeled)})")
+        if len(usable) < 2:
+            need.append(f"at least 2 labels with ≥ {MIN_PER_CLASS} windows each (have {len(usable)})")
+        rep.reason = "Not enough data: need " + " and ".join(need) + "."
+        return rep
+
+    data = labeled[labeled["label"].isin(usable)]
+    X, y = model_matrix(data).to_numpy(), data["label"].to_numpy()
+    times = data["window_start"].to_numpy()
+    n_splits = int(min(MAX_FOLDS, max(2, len(data) // 10)))
+    rows = []
+    for i, (tr, te) in enumerate(TimeSeriesSplit(n_splits=n_splits, gap=1).split(X), 1):
+        if len(set(y[tr])) < 2 or len(te) == 0:
+            continue
+        clf = RandomForestClassifier(n_estimators=300, random_state=seed, class_weight="balanced").fit(X[tr], y[tr])
+        base = DummyClassifier(strategy="most_frequent").fit(X[tr], y[tr])
+        pm, pb = clf.predict(X[te]), base.predict(X[te])
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")  # test folds may lack a class seen in training
+            rows.append({"fold": i, "train_windows": len(tr), "test_windows": len(te),
+                         "train_until": pd.Timestamp(times[tr].max()), "test_from": pd.Timestamp(times[te].min()),
+                         "model_accuracy": accuracy_score(y[te], pm), "baseline_accuracy": accuracy_score(y[te], pb),
+                         "model_balanced": balanced_accuracy_score(y[te], pm),
+                         "baseline_balanced": balanced_accuracy_score(y[te], pb),
+                         "baseline_predicts": str(pb[0])})
+    if not rows:
+        rep.reason = "Not enough data: no time-ordered fold had ≥ 2 labels in its training part yet."
+        return rep
+
+    folds = pd.DataFrame(rows)
+    rep.status, rep.folds, rep.classes_used = "ok", folds, sorted(usable)
+    rep.model_accuracy, rep.baseline_accuracy = folds["model_accuracy"].mean(), folds["baseline_accuracy"].mean()
+    rep.model_balanced, rep.baseline_balanced = folds["model_balanced"].mean(), folds["baseline_balanced"].mean()
+    dropped = sorted(set(counts) - set(usable))
+    if dropped:
+        rep.reason = f"Left out (fewer than {MIN_PER_CLASS} windows): {', '.join(dropped)}."
+
+    final = RandomForestClassifier(n_estimators=300, random_state=seed, class_weight="balanced").fit(X, y)
     unl = w.index[w["label"].isna()]
     if len(unl):
-        w.loc[unl, "predicted_label"] = clf.predict(X.loc[unl])
+        w.loc[unl, "predicted_label"] = final.predict(model_matrix(w.loc[unl]).to_numpy())
+    return rep

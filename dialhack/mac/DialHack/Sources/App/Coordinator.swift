@@ -4,6 +4,44 @@ import ServiceManagement
 
 /// Wires the layers together: capture → normalizer (GestureRecognizer) → ModeEngine → executor/HUD,
 /// with every recognized input logged. Everything here runs on the main queue.
+/// Where the dial's presses will go right now (they follow macOS's "Now Playing" app).
+enum PressRoute: Equatable {
+    /// Passthrough: presses are meant for your music app.
+    case passthrough
+    /// DialHack holds Now Playing.
+    case dialHack
+    /// Another app is playing audio, so it most likely gets the presses.
+    case otherApps([String])
+    /// DialHack's silent audio isn't running (it restarts itself within a few seconds).
+    case silenceDown
+
+    var ok: Bool { self == .dialHack || self == .passthrough }
+
+    var text: String {
+        switch self {
+        case .passthrough: return "Presses control your music (Passthrough)"
+        case .dialHack: return "Presses come to DialHack"
+        case let .otherApps(names): return "Presses go to \(names.joined(separator: ", ")) while it's playing. Pause it to use presses."
+        case .silenceDown: return "Reconnecting audio so presses come to DialHack…"
+        }
+    }
+}
+
+struct RecentInput: Identifiable, Equatable {
+    let id = UUID()
+    let time: Date
+    let event: String
+    let action: String
+    let mode: ModeID
+}
+
+enum PressTest: Equatable {
+    case idle
+    case waiting(since: Date)
+    case received
+    case missed(PressRoute)
+}
+
 final class Coordinator: ObservableObject {
     static let shared = Coordinator()
 
@@ -25,6 +63,17 @@ final class Coordinator: ObservableObject {
     }
     @Published private(set) var lastEvent = "No dial input yet"
     @Published private(set) var loginItemStatus = ""
+    /// "mm:ss" while a focus session is running or paused (menu bar), nil otherwise.
+    @Published private(set) var focusClock: String?
+    @Published private(set) var pressRoute: PressRoute = .passthrough
+    @Published private(set) var lastPressAt: Date?
+    /// Newest first, for the app window's live view.
+    @Published private(set) var recent: [RecentInput] = []
+    /// The on-screen dial turns 22.5° (1/16) per click.
+    @Published private(set) var dialAngle: Double = 0
+    @Published private(set) var pressCount = 0
+    @Published private(set) var pressTest: PressTest = .idle
+    private var pressTestWork: DispatchWorkItem?
 
     static let configURL = EventLogger.directory.appendingPathComponent("config.json")
 
@@ -38,6 +87,9 @@ final class Coordinator: ObservableObject {
     private var tickWork: DispatchWorkItem?
     private var pickerTimeoutWork: DispatchWorkItem?
     private var idleWork: DispatchWorkItem?
+    private var focusExpiryWork: DispatchWorkItem?
+    private var focusTicker: Timer?
+    private var lastFocusActive = false
     private var axPoll: Timer?
     private var lastAXWarning: Date = .distantPast
     private var started = false
@@ -62,21 +114,30 @@ final class Coordinator: ObservableObject {
         executor.onNeedsAccessibility = { [weak self] in self?.warnAccessibility() }
         executor.soundsEnabled = config.feedbackSounds
 
+        applyDockPolicy()
         volume.start(config: config)
         media.start()
         applyMode(engine.mode)
         refreshLoginItemStatus()
         writeStatus()
+        if CommandLine.arguments.contains("--accept-simulated-input") { acceptSimulatedInput() }
         axPoll = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in
             self?.accessibilityTrusted = ActionExecutor.accessibilityTrusted
+            self?.refreshPressRoute()
         }
+        refreshPressRoute()
     }
 
     /// Diagnostics for scripts and Claude: ~/Library/Application Support/DialHack/status.json.
     private func writeStatus() {
+        guard started else { return }
         let obj: [String: Any] = [
             "accessibility": accessibilityTrusted,
             "mode": mode.rawValue,
+            "focus_active": engine.focus.isActive,
+            "silent_audio_playing": media.silence.isPlaying,
+            "silent_audio_restarts": media.silence.restarts,
+            "press_route": pressRoute.text,
             "device": device.name,
             "dial_active": device.matches,
             "pid": ProcessInfo.processInfo.processIdentifier,
@@ -85,6 +146,20 @@ final class Coordinator: ObservableObject {
         if let data = try? JSONSerialization.data(withJSONObject: obj, options: [.prettyPrinted, .sortedKeys]) {
             try? data.write(to: EventLogger.directory.appendingPathComponent("status.json"), options: .atomic)
         }
+    }
+
+    /// Integration tests only: raw inputs posted as distributed notifications ("dev.dialhack.simulate",
+    /// object = PLAY / PAUSE / NEXT / PREV / VOLUME_UP / VOLUME_DOWN). Off unless launched with
+    /// --accept-simulated-input, so other processes can't drive DialHack's Accessibility powers.
+    private func acceptSimulatedInput() {
+        let map: [String: RawInput] = ["PLAY": .playPause("play"), "PAUSE": .playPause("pause"), "NEXT": .nextTrack,
+                                       "PREV": .previousTrack, "VOLUME_UP": .volumeUp, "VOLUME_DOWN": .volumeDown]
+        DistributedNotificationCenter.default().addObserver(forName: Notification.Name("dev.dialhack.simulate"), object: nil,
+                                                            queue: .main) { [weak self] n in
+            guard let name = n.object as? String, let raw = map[name] else { return }
+            self?.receive(raw, count: 1, at: monoMs())
+        }
+        lastEvent = "accepting simulated input (test mode)"
     }
 
     /// Puts the user's own volume back before quitting.
@@ -97,13 +172,25 @@ final class Coordinator: ObservableObject {
 
     private func receive(_ raw: RawInput, count: Int, at t: Double) {
         armIdleReturn()
+        if raw.source == "media_key" {
+            lastPressAt = Date()
+            pressCount += 1
+            if case .waiting = pressTest {
+                pressTestWork?.cancel()
+                pressTest = .received
+            }
+        } else {
+            dialAngle += (raw == .volumeUp ? 22.5 : -22.5) * Double(max(1, count))
+        }
         for _ in 0..<max(1, count) {
             for r in recognizer.feed(raw, at: t) { dispatch(r) }
         }
         scheduleTick()
     }
 
+    /// Logs every recognized dial input, in every mode, under the mode it happened in.
     private func dispatch(_ r: Recognized) {
+        let modeBefore = mode
         let out = engine.handle(r.gesture)
         perform(out)
         let event: String
@@ -111,8 +198,54 @@ final class Coordinator: ObservableObject {
         case .event(let e): event = e.rawValue
         case .openModePicker: event = "MODE_PICKER"
         }
-        logger.log(raw: r.raw, event: event, mode: mode, action: out.name, latencyMs: monoMs() - r.captureMs)
+        let latency = monoMs() - r.captureMs
+        logger.log(raw: r.raw, event: event, mode: modeBefore, action: out.name, latencyMs: latency)
+        if let turn = r.consumedTurn {
+            logger.log(raw: turn, event: turn == .volumeUp ? "ROTATE_CW" : "ROTATE_CCW", mode: modeBefore,
+                       action: "picker_turn", latencyMs: latency)
+        }
         lastEvent = "\(event) → \(out.name)"
+        recent.insert(RecentInput(time: Date(), event: event, action: out.name, mode: modeBefore), at: 0)
+        if recent.count > 40 { recent.removeLast(recent.count - 40) }
+    }
+
+    // MARK: - app window
+
+    var focus: FocusTimer { engine.focus }
+
+    /// Focus Timer buttons in the window. They act like the dial but aren't logged as dial events
+    /// (they aren't fidgeting); labels they produce are still logged.
+    func focusButton(_ e: DialEvent) {
+        if mode != .focusTimer { perform(engine.setMode(.focusTimer)) }
+        perform(engine.handle(.event(e)))
+        armIdleReturn()
+    }
+
+    func focusRate(_ label: String) {
+        perform(engine.focusRate(label))
+    }
+
+    func setFocusMinutes(_ m: Int) {
+        guard !engine.focus.isActive else { return }
+        config.focusMinutes = m
+    }
+
+    /// "Press the dial once" check: did a press reach DialHack within 10 s?
+    func startPressTest() {
+        pressTestWork?.cancel()
+        refreshPressRoute()
+        pressTest = .waiting(since: Date())
+        let work = DispatchWorkItem { [weak self] in
+            guard let self, case .waiting = self.pressTest else { return }
+            self.pressTest = .missed(self.pressRoute)
+        }
+        pressTestWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 10, execute: work)
+    }
+
+    func resetPressTest() {
+        pressTestWork?.cancel()
+        pressTest = .idle
     }
 
     private func scheduleTick() {
@@ -132,9 +265,11 @@ final class Coordinator: ObservableObject {
             switch a {
             case .hud(let c): hud.show(c)
             case .setMode(let m): applyMode(m)
+            case .label(let r): logger.logLabel(r)
             default: executor.perform(a)
             }
         }
+        syncFocus()
         recognizer.immediatePress2 = engine.pickerOpen
         recognizer.suppressWiggle = engine.pickerOpen
         pickerTimeoutWork?.cancel()
@@ -145,6 +280,26 @@ final class Coordinator: ObservableObject {
             }
             pickerTimeoutWork = work
             DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(Int(config.pickerTimeoutMs)), execute: work)
+        }
+    }
+
+    func refreshPressRoute() {
+        let route: PressRoute
+        if !mode.hijacks {
+            route = .passthrough
+        } else {
+            let others = AudioActivity.otherPlayers().map(\.name)
+            if !others.isEmpty {
+                route = .otherApps(others)
+            } else if config.keepNowPlaying && !media.silence.isPlaying {
+                route = .silenceDown
+            } else {
+                route = .dialHack
+            }
+        }
+        if route != pressRoute {
+            pressRoute = route
+            writeStatus()
         }
     }
 
@@ -160,7 +315,7 @@ final class Coordinator: ObservableObject {
         idleWork?.cancel()
         guard mode.hijacks, config.autoPassthroughMinutes > 0 else { return }
         let work = DispatchWorkItem { [weak self] in
-            guard let self, self.mode.hijacks, !self.engine.pickerOpen else { return }
+            guard let self, self.mode.hijacks, !self.engine.pickerOpen, !self.engine.focus.isActive else { return }
             self.perform(self.engine.setMode(.passthrough))
             self.hud.show(.banner(title: "Passthrough", subtitle: "Back to normal after \(Int(self.config.autoPassthroughMinutes)) min idle"))
             self.lastEvent = "auto → passthrough (idle)"
@@ -169,15 +324,63 @@ final class Coordinator: ObservableObject {
         DispatchQueue.main.asyncAfter(deadline: .now() + config.autoPassthroughMinutes * 60, execute: work)
     }
 
+    /// Keeps the expiry timer and the menu bar countdown in step with the focus state machine.
+    private func syncFocus() {
+        objectWillChange.send()
+        focusExpiryWork?.cancel()
+        let f = engine.focus
+        if f.isActive != lastFocusActive {
+            lastFocusActive = f.isActive
+            writeStatus()
+        }
+        if let ends = f.endsAt {
+            let work = DispatchWorkItem { [weak self] in
+                guard let self else { return }
+                let out = self.engine.focusExpired(now: Date())
+                self.perform(out)
+                self.lastEvent = "focus timer → \(out.name)"
+            }
+            focusExpiryWork = work
+            DispatchQueue.main.asyncAfter(deadline: .now() + max(0, ends.timeIntervalSinceNow), execute: work)
+        }
+        let showClock: Bool
+        switch f.phase {
+        case .running, .paused: showClock = mode == .focusTimer
+        default: showClock = false
+        }
+        if showClock {
+            updateFocusClock()
+            if focusTicker == nil {
+                focusTicker = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in self?.updateFocusClock() }
+            }
+        } else {
+            focusTicker?.invalidate()
+            focusTicker = nil
+            focusClock = nil
+        }
+    }
+
+    private func updateFocusClock() {
+        let s = Int(engine.focus.remaining(at: Date()).rounded())
+        let paused: Bool = { if case .paused = engine.focus.phase { return true } else { return false } }()
+        focusClock = String(format: "%d:%02d", s / 60, s % 60) + (paused ? " ⏸" : "")
+    }
+
     private func applyMode(_ m: ModeID) {
         mode = m
         armIdleReturn()
+        DispatchQueue.main.async { [weak self] in self?.refreshPressRoute() }
         volume.setHijack(m.hijacks)
         media.setClaim(m.hijacks, keepNowPlaying: config.keepNowPlaying)
         if m.hijacks && !ActionExecutor.accessibilityTrusted && m != .comboLock { warnAccessibility() }
     }
 
+    func applyDockPolicy() {
+        NSApp.setActivationPolicy(config.showInDock ? .regular : .accessory)
+    }
+
     private func applyConfig() {
+        applyDockPolicy()
         engine.config = config
         recognizer.pickerWindowMs = config.pickerWindowMs
         recognizer.pickerGesture = config.pickerGesture

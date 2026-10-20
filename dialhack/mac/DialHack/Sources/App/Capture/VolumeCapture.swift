@@ -10,7 +10,8 @@ func monoMs() -> Double { Double(clock_gettime_nsec_np(CLOCK_UPTIME_RAW)) / 1_00
 final class VolumeCapture {
     /// 'vmvc' = kAudioHardwareServiceDeviceProperty_VirtualMainVolume
     private static let virtualMainVolume: AudioObjectPropertySelector = 0x766D_7663
-    static let baseline: Float = 0.5
+    /// Where the volume is parked while a dial mode is active (the user's level, with headroom).
+    private var park: Float = 0.5
 
     struct DeviceInfo: Equatable {
         var name = "none"
@@ -31,6 +32,7 @@ final class VolumeCapture {
     private var savedUserVolume: Float?
     private var idleRestore: DispatchWorkItem?
     private var restoreIdleMs: Double = 1500
+    private var timing: RestoreTiming = .everyClick
     private var edgeSteps = 2
     private var deviceMatch = "CMF"
 
@@ -47,6 +49,7 @@ final class VolumeCapture {
     func apply(config: DialConfig) {
         q.async {
             self.restoreIdleMs = config.restoreIdleMs
+            self.timing = config.restoreTiming
             self.edgeSteps = config.restoreEdgeSteps
             self.deviceMatch = config.deviceMatch
             self.refreshMatch()
@@ -63,7 +66,8 @@ final class VolumeCapture {
             guard self.info.matches, let current = self.read() else { return }
             if on {
                 self.savedUserVolume = current
-                self.restore(to: Self.baseline)
+                self.park = VolumeTracker.parkLevel(for: current)
+                self.restore(to: self.park)
             } else if let v = self.savedUserVolume {
                 self.restore(to: v)
                 self.savedUserVolume = nil
@@ -105,7 +109,10 @@ final class VolumeCapture {
         tracker.reset(to: read())
         refreshMatch()
         // A hijack in progress moves to the new device only if it matches.
-        if hijack && info.matches { restore(to: Self.baseline) }
+        if hijack && info.matches, let v = read() {
+            park = VolumeTracker.parkLevel(for: savedUserVolume ?? v)
+            restore(to: park)
+        }
     }
 
     private func refreshMatch() {
@@ -127,10 +134,13 @@ final class VolumeCapture {
 
         guard hijack else { return }
         idleRestore?.cancel()
-        if VolumeTracker.nearEdge(v, edgeSteps: edgeSteps) {
-            restore(to: Self.baseline)
+        if timing == .everyClick || VolumeTracker.nearEdge(v, edgeSteps: edgeSteps) {
+            restore(to: park)
         } else {
-            let work = DispatchWorkItem { [weak self] in self?.restore(to: Self.baseline) }
+            let work = DispatchWorkItem { [weak self] in
+                guard let self else { return }
+                self.restore(to: self.park)
+            }
             idleRestore = work
             q.asyncAfter(deadline: .now() + .milliseconds(Int(restoreIdleMs)), execute: work)
         }

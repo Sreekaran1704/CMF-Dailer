@@ -82,6 +82,50 @@ def write_jsonl(df: pd.DataFrame, path: Path) -> Path:
     return path
 
 
+REGIME_LABEL = {"focused": "focused", "restless": "distracted", "bored": "bored"}
+
+
+def focus_labels(df: pd.DataFrame, seed: int = 0, rate_share: float = 0.6) -> pd.DataFrame:
+    """Synthetic Focus Timer labels: a session rating for ~60% of sessions (its regime) and
+    "distracted" tags sprinkled through restless sessions."""
+    rng = np.random.default_rng(seed + 1)
+    rows = []
+    for sid, g in df[df["regime"].isin(REGIMES)].groupby("session_id"):
+        start, end, regime = g["ts"].min(), g["ts"].max(), g["regime"].iloc[0]
+        if rng.random() < rate_share:
+            rows.append({"ts": end, "label": REGIME_LABEL[regime], "source": "focus_session_end",
+                         "focus_session_id": sid, "start": start, "end": end, "platform": "mac", "session_id": "demo"})
+        if regime == "restless":
+            for t in g["ts"].sample(n=min(3, len(g)), random_state=int(rng.integers(1 << 31))):
+                rows.append({"ts": t, "label": "distracted", "source": "focus_timer_tag", "focus_session_id": sid,
+                             "platform": "mac", "session_id": "demo"})
+    return pd.DataFrame(rows)
+
+
+def write_label_jsonl(df: pd.DataFrame, path: Path) -> Path:
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fmt = lambda t: pd.Timestamp(t).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"  # noqa: E731
+    with open(path, "w", encoding="utf-8") as f:
+        for r in df.to_dict("records"):
+            for k in ("ts", "start", "end"):
+                if k in r and pd.notna(r[k]):
+                    r[k] = fmt(r[k])
+                else:
+                    r.pop(k, None)
+            f.write(json.dumps(r) + "\n")
+    return path
+
+
+def dashboard_labels(df: pd.DataFrame, seed: int = 0, frac: float = 0.1, window_minutes: float = 5) -> pd.DataFrame:
+    """A few hand labels, as if made in the dashboard (restless shown as "stressed")."""
+    t = window_truth(df, window_minutes)
+    t = t[t["truth"].isin(REGIMES)].sample(frac=frac, random_state=seed)
+    lab = t["truth"].map({"focused": "focused", "restless": "stressed", "bored": "bored"})
+    return pd.DataFrame({"window_start": t["window_start"].dt.strftime("%Y-%m-%dT%H:%M:%SZ"), "label": lab,
+                         "window_minutes": window_minutes})
+
+
 def window_truth(df: pd.DataFrame, window_minutes: float = 5) -> pd.DataFrame:
     """Majority regime per window (ground truth for tests and demo labels)."""
     d = df.copy()

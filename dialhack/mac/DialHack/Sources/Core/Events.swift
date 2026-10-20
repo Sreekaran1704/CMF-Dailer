@@ -59,6 +59,9 @@ struct Recognized: Equatable {
     let raw: RawInput
     /// Monotonic ms when the raw input was captured (for latency logging).
     let captureMs: Double
+    /// The turn that completed "double press, then turn". It opens the picker instead of acting, but
+    /// it's still a dial click, so the logger records it too (telemetry counts every click).
+    var consumedTurn: RawInput? = nil
 }
 
 enum Modifier: String, Codable, CaseIterable {
@@ -100,6 +103,7 @@ enum HUDContent: Equatable {
     case list(title: String, items: [String], selected: Int)
     case combo(entered: Int, length: Int, current: Int)
     case message(String, success: Bool)
+    case focus(title: String, seconds: Int, running: Bool, tags: Int)
     case hide
 }
 
@@ -119,4 +123,6 @@ enum Action: Equatable {
     case hud(HUDContent)
     case sound(FeedbackSound)
     case setMode(ModeID)
+    /// A self-report label (Focus Timer) for the label log.
+    case label(LabelRecord)
 }

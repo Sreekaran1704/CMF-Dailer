@@ -45,7 +45,7 @@ final class ActionExecutor {
         case .sound(let s):
             if soundsEnabled { NSSound(named: NSSound.Name(s.rawValue))?.play() }
             return true
-        case .hud, .setMode:
+        case .hud, .setMode, .label:
             return true // handled by the coordinator
         }
     }
