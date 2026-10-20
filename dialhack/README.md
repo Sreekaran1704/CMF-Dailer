@@ -8,7 +8,7 @@ and learn how you fidget along the way. Everything stays on your Mac.
 </p>
 
 <p align="center">
-<a href="../../releases/latest/download/DialHack.zip"><b>⬇ Download DialHack for Mac</b></a>
+<a href="../../../releases/latest/download/DialHack.zip"><b>⬇ Download DialHack for Mac</b></a>
 &nbsp;·&nbsp; macOS 14+ · Apple Silicon
 </p>
 
@@ -35,7 +35,7 @@ and learn how you fidget along the way. Everything stays on your Mac.
 
 ## Install
 
-1. [Download **DialHack.zip**](../../releases/latest/download/DialHack.zip) and unzip it.
+1. [Download **DialHack.zip**](../../../releases/latest/download/DialHack.zip) and unzip it.
 2. Move **DialHack.app** to **Applications**.
 3. Open it. DialHack isn't notarized by Apple (it's a free side project without a paid developer account), so macOS will block it the first time:
    - **macOS 15 and later:** after the warning, go to **System Settings → Privacy & Security**, scroll down and click **Open Anyway**.
