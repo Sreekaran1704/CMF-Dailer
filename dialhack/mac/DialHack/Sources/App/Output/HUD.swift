@@ -4,17 +4,14 @@ import SwiftUI
 /// On-screen overlay: mode banners, the mode picker, macro list and combo lock display.
 /// A borderless, non-activating, click-through panel so it never steals focus from the app
 /// receiving the dial's actions.
-final class HUDModel: ObservableObject {
-    @Published var content: HUDContent = .hide
-}
 
 /// The HUD as a comic panel popping onto the screen: ink border, hard shadow, yellow caption, Bangers.
 struct HUDView: View {
-    @ObservedObject var model: HUDModel
+    let content: HUDContent
 
     var body: some View {
         Group {
-            switch model.content {
+            switch content {
             case .hide:
                 EmptyView()
             case let .banner(title, subtitle):
@@ -31,7 +28,7 @@ struct HUDView: View {
                         HStack(spacing: 10) {
                             Text(item.uppercased()).font(CK.title(on ? 22 : 17)).tracking(0.6)
                                 .foregroundStyle(on ? CK.onYellow : CK.inkSoft)
-                            Spacer()
+                            Spacer(minLength: 24)
                             if on { Text("PRESS!").font(CK.title(15)).foregroundStyle(CK.red) }
                         }
                         .padding(.horizontal, 10).padding(.top, 4).padding(.bottom, 2)
@@ -57,6 +54,21 @@ struct HUDView: View {
                     SFX(text: success ? "Pow!" : "Bonk!", size: 30, fill: success ? CK.green : CK.red, tilt: -4)
                     Text(text).font(CK.title(22)).tracking(0.5)
                 }
+            case let .armed(since, windowMs):
+                VStack(spacing: 8) {
+                    Narration(text: "Clik-clik!").rotationEffect(.degrees(-2))
+                    SFX(text: "Turn to switch mode", size: 28, fill: CK.yellow, tilt: -2)
+                    TimelineView(.periodic(from: since, by: 0.04)) { ctx in
+                        let left = max(0, 1 - ctx.date.timeIntervalSince(since) * 1000 / windowMs)
+                        ZStack(alignment: .leading) {
+                            Rectangle().fill(CK.panelDeep)
+                            Rectangle().fill(CK.red).frame(width: 220 * left)
+                        }
+                        .frame(width: 220, height: 8)
+                        .overlay(Rectangle().strokeBorder(CK.line, lineWidth: 2))
+                    }
+                    Text("…or wait, and it counts as a double press").font(CK.bodyBold(12.5)).foregroundStyle(CK.inkSoft)
+                }
             case let .focus(title, seconds, running, tags):
                 VStack(spacing: 6) {
                     Narration(text: title)
@@ -68,6 +80,7 @@ struct HUDView: View {
                 }
             }
         }
+        .fixedSize(horizontal: true, vertical: false)   // its own ideal width, however wide the proposal
         .foregroundStyle(CK.ink)
         .padding(.horizontal, 26).padding(.vertical, 20)
         .frame(minWidth: 300)
@@ -80,7 +93,16 @@ struct HUDView: View {
 }
 
 final class HUD {
-    private let model = HUDModel()
+    /// The panel is measured and centred for each new content before it's shown, so the first frame is already
+    /// right (e.g. when the mode picker replaces the smaller Focus Timer pop-up). The hosting view sits in a plain
+    /// container and never sizes the window itself: letting SwiftUI and our own setFrame both drive the window
+    /// size is what made it jump, and can even loop.
+    private lazy var host: NSHostingView<HUDView> = {
+        let h = NSHostingView(rootView: HUDView(content: .hide))
+        h.sizingOptions = []
+        h.autoresizingMask = [.width, .height]
+        return h
+    }()
     private lazy var panel: NSPanel = {
         let p = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 320, height: 200),
                         styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: true)
@@ -91,24 +113,29 @@ final class HUD {
         p.hasShadow = false   // the panel draws its own hard comic shadow
         p.ignoresMouseEvents = true
         p.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
-        p.contentView = NSHostingView(rootView: HUDView(model: model))
+        let container = NSView()
+        host.frame = container.bounds
+        container.addSubview(host)
+        p.contentView = container
         return p
     }()
     private var hideWork: DispatchWorkItem?
+    var debugPanel: NSPanel { panel }
 
     /// Banners and messages fade on their own; lists and the combo stay until replaced or hidden
     /// (with a long safety timeout).
     func show(_ content: HUDContent) {
         hideWork?.cancel()
-        model.content = content
         guard content != .hide else { panel.orderOut(nil); return }
 
-        if let view = panel.contentView {
-            let size = view.fittingSize
-            let screen = NSScreen.main?.visibleFrame ?? .zero
-            panel.setFrame(NSRect(x: screen.midX - size.width / 2, y: screen.minY + screen.height * 0.22,
-                                  width: size.width, height: size.height), display: true)
-        }
+        let view = HUDView(content: content)
+        let fit = NSHostingController(rootView: view).sizeThatFits(in: CGSize(width: 640, height: 1000))
+        let size = CGSize(width: ceil(fit.width), height: ceil(fit.height))
+        host.rootView = view
+        let screen = NSScreen.main?.visibleFrame ?? .zero
+        panel.setFrame(NSRect(x: screen.midX - size.width / 2, y: screen.minY + screen.height * 0.22,
+                              width: size.width, height: size.height), display: true)
+        host.frame = panel.contentView?.bounds ?? .zero
         panel.orderFrontRegardless()
 
         let linger: Double

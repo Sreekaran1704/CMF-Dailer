@@ -11,7 +11,16 @@ final class MediaKeyCapture {
     private let center = MPRemoteCommandCenter.shared()
     let silence = SilentAudio()
 
+    private var registered = false
+
     func start() {
+        release()
+    }
+
+    /// Adding targets is what makes macOS treat DialHack as a media app at all, so they exist only in dial modes.
+    private func register() {
+        guard !registered else { return }
+        registered = true
         let commands: [(MPRemoteCommand, RawInput)] = [
             (center.playCommand, .playPause("play")),
             (center.pauseCommand, .playPause("pause")),
@@ -27,20 +36,42 @@ final class MediaKeyCapture {
                 return .success
             }
         }
-        setClaim(false, keepNowPlaying: false)
     }
 
-    /// In hijacking modes DialHack claims Now Playing ("playing", optionally with silent audio) so
-    /// presses come here. In passthrough it advertises "paused" so music apps take precedence.
-    func setClaim(_ claim: Bool, keepNowPlaying: Bool) {
+    private func unregister() {
+        registered = false
+        for cmd in allCommands {
+            cmd.removeTarget(nil)
+            cmd.isEnabled = false
+        }
+    }
+
+    private var allCommands: [MPRemoteCommand] {
+        [center.playCommand, center.pauseCommand, center.togglePlayPauseCommand, center.nextTrackCommand, center.previousTrackCommand]
+    }
+
+    /// Dial modes: claim Now Playing ("playing", optionally with silent audio) so presses come here.
+    func claim(keepNowPlaying: Bool) {
+        register()
         let info = MPNowPlayingInfoCenter.default()
         info.nowPlayingInfo = [
             MPMediaItemPropertyTitle: "DialHack",
-            MPMediaItemPropertyArtist: claim ? "Dial active" : "Passthrough",
-            MPNowPlayingInfoPropertyPlaybackRate: claim ? 1.0 : 0.0,
+            MPMediaItemPropertyArtist: "Dial active",
+            MPNowPlayingInfoPropertyPlaybackRate: 1.0,
         ]
-        info.playbackState = claim ? .playing : .paused
-        silence.set(claim && keepNowPlaying)
+        info.playbackState = .playing
+        silence.set(keepNowPlaying)
+    }
+
+    /// Passthrough: let go of Now Playing completely, so the keyboard's media keys and the dial's presses
+    /// go to your music or video again. "Paused" kept play/pause coming to DialHack, and disabled commands
+    /// swallowed them (both user reports, 2026-10-20), so the targets are removed and the info cleared.
+    func release() {
+        silence.set(false)
+        let info = MPNowPlayingInfoCenter.default()
+        info.nowPlayingInfo = nil
+        info.playbackState = .stopped
+        unregister()
     }
 }
 

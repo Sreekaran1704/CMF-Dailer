@@ -165,7 +165,7 @@ final class Coordinator: ObservableObject {
     /// Puts the user's own volume back before quitting.
     func shutdown() {
         volume.stopSync()
-        media.setClaim(false, keepNowPlaying: false)
+        media.release()
     }
 
     // MARK: - input path
@@ -185,6 +185,7 @@ final class Coordinator: ObservableObject {
         for _ in 0..<max(1, count) {
             for r in recognizer.feed(raw, at: t) { dispatch(r) }
         }
+        updateArmedCue()
         scheduleTick()
     }
 
@@ -254,16 +255,35 @@ final class Coordinator: ObservableObject {
         let work = DispatchWorkItem { [weak self] in
             guard let self else { return }
             for r in self.recognizer.tick(at: monoMs()) { self.dispatch(r) }
+            self.updateArmedCue()
             self.scheduleTick()
         }
         tickWork = work
         DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(Int(max(0, deadline - monoMs())) + 5), execute: work)
     }
 
+    /// "Turn now to switch modes": shown the moment a double press is held for the picker window, so the window
+    /// is visible instead of guessed. Hidden again if the press resolves without showing anything else.
+    private var armedCueShown = false
+
+    private func updateArmedCue() {
+        if recognizer.nextDeadline != nil {
+            if !armedCueShown {
+                hud.show(.armed(since: Date(), windowMs: config.pickerWindowMs))
+                armedCueShown = true
+            }
+        } else if armedCueShown {
+            armedCueShown = false
+            hud.show(.hide)
+        }
+    }
+
     private func perform(_ out: EngineOutput) {
         for a in out.actions {
             switch a {
-            case .hud(let c): hud.show(c)
+            case .hud(let c):
+                armedCueShown = false   // replaced by whatever the press or picker shows
+                hud.show(c)
             case .setMode(let m): applyMode(m)
             case .label(let r): logger.logLabel(r)
             default: executor.perform(a)
@@ -366,12 +386,17 @@ final class Coordinator: ObservableObject {
         focusClock = String(format: "%d:%02d", s / 60, s % 60) + (paused ? " ⏸" : "")
     }
 
+    /// Dial modes hold Now Playing so presses come to DialHack; Passthrough lets go of it entirely.
+    private func claimPresses() {
+        if mode.hijacks { media.claim(keepNowPlaying: config.keepNowPlaying) } else { media.release() }
+    }
+
     private func applyMode(_ m: ModeID) {
         mode = m
         armIdleReturn()
         DispatchQueue.main.async { [weak self] in self?.refreshPressRoute() }
         volume.setHijack(m.hijacks)
-        media.setClaim(m.hijacks, keepNowPlaying: config.keepNowPlaying)
+        claimPresses()
         if m.hijacks && !ActionExecutor.accessibilityTrusted && m != .comboLock { warnAccessibility() }
     }
 
@@ -388,7 +413,7 @@ final class Coordinator: ObservableObject {
         executor.soundsEnabled = config.feedbackSounds
         armIdleReturn()
         volume.apply(config: config)
-        media.setClaim(mode.hijacks, keepNowPlaying: config.keepNowPlaying)
+        claimPresses()
         if engine.mode != mode { applyMode(engine.mode) }
     }
 

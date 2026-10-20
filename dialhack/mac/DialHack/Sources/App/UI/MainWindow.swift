@@ -288,7 +288,9 @@ struct DialView: View {
                             if let clock = c.focusClock {
                                 CaptionBox(label: "Focus running", text: "\(clock) left on the clock.", color: CK.red)
                             }
-                            Text("Switch powers on the dial: \(c.config.pickerGesture.title.lowercased()).")
+                            Text(c.mode == .passthrough && c.config.pickerGesture != .wiggle
+                                 ? "In Passthrough your presses control your music, so switch powers with the cards below or the menu bar."
+                                 : "Switch powers on the dial: \(c.config.pickerGesture.title.lowercased()).")
                                 .font(CK.bodyItalic(13.5)).foregroundStyle(CK.muted)
                         }
                     }

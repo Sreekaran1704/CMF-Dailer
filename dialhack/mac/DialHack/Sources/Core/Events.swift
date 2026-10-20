@@ -104,6 +104,8 @@ enum HUDContent: Equatable {
     case combo(entered: Int, length: Int, current: Int)
     case message(String, success: Bool)
     case focus(title: String, seconds: Int, running: Bool, tags: Int)
+    /// A double press is being held: turn before `until` to open the mode picker.
+    case armed(since: Date, windowMs: Double)
     case hide
 }
 

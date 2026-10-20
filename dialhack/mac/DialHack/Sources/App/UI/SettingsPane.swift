@@ -44,7 +44,7 @@ struct SettingsPane: View {
             group("The dial", color: CK.red) {
                 row("Open the mode picker with") { menu($c.config.pickerGesture, PickerGesture.allCases.map { ($0, $0.title) }) }
                 if c.config.pickerGesture == .doublePressTurn {
-                    row("Double press → turn window") {
+                    row("Double press → turn window", note: "longer is easier to hit; a plain double press waits this long to act") {
                         ComicStepper(value: Int(c.config.pickerWindowMs), range: 300...2500, step: 50, unit: " ms") { c.config.pickerWindowMs = Double($0) }
                     }
                 }

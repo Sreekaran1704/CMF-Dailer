@@ -137,7 +137,7 @@ That looks like the dial being turned, not the system drifting. Automatic AVRCP 
   - **(c)** Hold-free toggle: double press always cycles modes, and each mode gets only `PRESS_1`. That breaks the starter table's Press 2 column.
   - **Chosen: (b).**
   - **Retests:** triple press set to "skip back" didn't work (reported by you). Press-and-hold set to "skip back": `DialSniffer --guided --only hold`, session `2A0C1412`, 2026-10-18. **`previousTrack` arrived in 0 of 10 holds.** 6 holds sent nothing; 4 arrived as `play`/`pause`, the same as a single press. Hold is **not reliable** (the bar was 8 of 10), so (b) stays. Report: [sniffer-report-hold.md](sniffer-report-hold.md).
-  - **Delay this adds to a plain double press:** DialHack holds every `nextTrack` for the picker window, **1000 ms** by default (adjustable 400–2500 ms in Settings), plus up to about 5 ms of timer slack. That part is exact, by design. The buds' own double-press recognition time comes on top of it and **wasn't measured**: the guided prompt-to-event times (double press median 1433 ms, single press 1475–2735 ms) are dominated by human reaction. A Right Shift marker run (needs Input Monitoring) would measure it.
+  - **Delay this adds to a plain double press:** DialHack holds every `nextTrack` for the picker window, **1200 ms** by default (adjustable 300–2500 ms in Settings; it was 500 ms until real use showed first tries arriving 0.8–1.2 s after the double press), plus up to about 5 ms of timer slack. That part is exact, by design. The buds' own double-press recognition time comes on top of it and **wasn't measured**: the guided prompt-to-event times (double press median 1433 ms, single press 1475–2735 ms) are dominated by human reaction. A Right Shift marker run (needs Input Monitoring) would measure it.
 - **Android:** pending.
 
 ## Known limits, stated up front
@@ -145,3 +145,9 @@ That looks like the dial being turned, not the system drifting. Automatic AVRCP 
 - ANC and Low Lag gestures never reach the host.
 - While another app is actively playing media, presses go to that app, not DialHack. Rotation still works.
 - About 3 rotation steps per second is the ceiling on macOS.
+- **Passthrough can't open the picker from the dial (2026-10-20, tested with you).** macOS sends play/pause/next to one app: the last one that played audio. To see a double press, DialHack has to be that app, and then your keyboard's play/pause and the dial's presses stop reaching your music or video. Three things were tried:
+  - holding Now Playing in Passthrough too (continuous silence) made the picker work, but the keyboard play/pause key went to DialHack and did nothing;
+  - a one-second claim delivered presses only as `togglePlayPause`, never `nextTrack`, so double presses didn't arrive;
+  - "paused" or disabled controls kept swallowing presses after a dial mode.
+  What works: in Passthrough DialHack **removes its media-command targets** and clears Now Playing, so keyboard and dial presses go to your music again. Leave Passthrough from the menu bar or the window; in dial modes, double press + turn works.
+- **The macOS volume animation stopped for everything** (keyboard keys too, even with DialHack quit) on 2026-10-20. `killall ControlCenter` (macOS relaunches it) brought it back for both the keys and the dial. Not proven, but a likely trigger is the many volume writes DialHack makes when it puts the volume back after every click. If it happens again, restart Control Center the same way.

@@ -11,7 +11,7 @@ enum SnapshotRunner {
         return nil
     }
 
-    static var requested: Bool { CommandLine.arguments.contains("--snapshot") || CommandLine.arguments.contains("--click-test") }
+    static var requested: Bool { ["--snapshot", "--click-test", "--hud-test"].contains { CommandLine.arguments.contains($0) } }
 
     /// Clicks real window points with synthetic mouse events (no Accessibility needed: they're sent to our own window)
     /// and prints what changed. Points are in window coordinates from the top-left.
@@ -54,8 +54,42 @@ enum SnapshotRunner {
         }
     }
 
+    /// Shows HUD states in sequence (focus → picker → picker step) and captures the panel each time.
+    static func hudTest(into out: URL) {
+        let hud = HUD()
+        let items = ModeID.allCases.map(\.title)
+        let steps: [(String, () -> HUDContent)] = [
+            ("1-focus", { .focus(title: "Focus · running", seconds: 1500, running: true, tags: 0) }),
+            ("1b-focus-tagged", { .focus(title: "Focus · running", seconds: 1490, running: true, tags: 1) }),
+            ("1c-armed", { .armed(since: Date(), windowMs: 1200) }),
+            ("2-picker-first", { .list(title: "Choose mode · turn, then press", items: items, selected: 2) }),
+            ("3-picker-next", { .list(title: "Choose mode · turn, then press", items: items, selected: 3) }),
+        ]
+        func run(_ i: Int) {
+            guard i < steps.count else { NSApp.terminate(nil); return }
+            hud.show(steps[i].1())
+            let atShow = hud.debugPanel.frame
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                let p = hud.debugPanel
+                if let v = p.contentView?.subviews.first, let rep = v.bitmapImageRepForCachingDisplay(in: v.bounds) {
+                    v.cacheDisplay(in: v.bounds, to: rep)
+                    try? rep.representation(using: .png, properties: [:])?.write(to: out.appendingPathComponent("hud-\(steps[i].0).png"))
+                    print("hud-test: \(steps[i].0) at show=\(atShow) later=\(p.frame) fitting=\(v.fittingSize)")
+                }
+                run(i + 1)
+            }
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1) { run(0) }
+    }
+
     static func runIfRequested() {
         if CommandLine.arguments.contains("--click-test") { clickTest(); return }
+        if let i = CommandLine.arguments.firstIndex(of: "--hud-test"), i + 1 < CommandLine.arguments.count {
+            let out = URL(fileURLWithPath: CommandLine.arguments[i + 1])
+            try? FileManager.default.createDirectory(at: out, withIntermediateDirectories: true)
+            hudTest(into: out)
+            return
+        }
         let args = CommandLine.arguments
         guard let i = args.firstIndex(of: "--snapshot"), i + 1 < args.count else { return }
         let out = URL(fileURLWithPath: args[i + 1])

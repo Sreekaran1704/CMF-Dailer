@@ -18,12 +18,12 @@ and learn how you fidget along the way. Everything stays on your Mac.
 
 ## What it does
 
-- **Dial modes.** Double-press the dial, then turn it to pick a mode:
+- **Dial modes.** Pick a mode from the menu bar, or, in any dial mode, double-press the dial and then turn it:
   - **Scroll:** scroll any app, a few lines per click.
   - **Scrub:** seek through video (←/→), with play/pause on press.
   - **Combo Lock:** dial in a code.
   - **Macros:** run a shortcut, open an app or run a script.
-  - **Passthrough:** the dial goes back to being a volume knob.
+  - **Passthrough:** the dial goes back to being a volume knob, and its presses (and your keyboard's play/pause) control your music again.
 - **Your volume stays put.** In dial modes DialHack uses the volume signal as input, then puts your volume back after every click.
 - **Focus Timer.** Turn to set the minutes and press to start. Double-press whenever you get distracted, and rate the session at the end.
 - **Fidget insights.** Every turn and press is logged locally. You get a weekday × hour heatmap, clusters of "kinds" of fidgeting, unusually restless stretches, and a classifier that has to beat an always-guess-the-most-common-label baseline before it's shown as useful.

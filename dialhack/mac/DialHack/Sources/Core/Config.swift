@@ -69,7 +69,9 @@ struct DialConfig: Codable, Equatable {
     var comboSuccessMacro: Macro? = nil
     var macros: [Macro] = DialConfig.defaultMacros
     /// Double press → turn window for the mode picker.
-    var pickerWindowMs: Double = 500
+    // 1200 ms: in real use, turns that opened the picker came 0.1–0.35 s after the double press, but first tries
+    // often came 0.8–1.2 s later and fell through to "next track" at 500 ms.
+    var pickerWindowMs: Double = 1200
     /// Wiggle: max time between the two opposite clicks. Phase 0 never saw clicks closer than ~300 ms.
     var wiggleWindowMs: Double = 400
     /// Mode picker closes itself after this long without input.

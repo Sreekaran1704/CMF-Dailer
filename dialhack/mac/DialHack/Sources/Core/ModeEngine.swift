@@ -92,10 +92,11 @@ final class ModeEngine {
         .hud(.list(title: "Choose mode · turn, then press", items: pickerItems.map(\.title), selected: pickerIndex))
     }
 
-    private func openPicker(step: Int) -> EngineOutput {
+    /// Opens on the current mode. The turn that opened the picker (double press, then turn) only opens it;
+    /// it doesn't also move the highlight, so the first turn never jumps (e.g. Focus Timer → wrapped to the top).
+    private func openPicker(step _: Int) -> EngineOutput {
         let items = pickerItems
-        let current = items.firstIndex(of: mode) ?? 0
-        pickerIndex = wrap(current + step, items.count)
+        pickerIndex = items.firstIndex(of: mode) ?? 0
         pickerOpen = true
         return EngineOutput(actions: [pickerHUD(), .sound(.select)], name: "open_mode_picker")
     }
@@ -117,6 +118,7 @@ final class ModeEngine {
 
     private func passthrough(_ e: DialEvent) -> EngineOutput {
         // The OS already applied the volume change / the media key went to the Now Playing app.
+        // (DialHack lets go of Now Playing in Passthrough, so presses normally don't reach it at all.)
         switch e {
         case .rotateCW: return EngineOutput(name: "volume_up")
         case .rotateCCW: return EngineOutput(name: "volume_down")

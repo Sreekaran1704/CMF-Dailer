@@ -84,7 +84,9 @@ struct MenuContent: View {
             }
         }
         .pickerStyle(.inline)
-        Text("Switch modes: \(c.config.pickerGesture.title.lowercased())")
+        Text(c.mode == .passthrough && c.config.pickerGesture != .wiggle
+             ? "Switch modes: pick one above (the dial's presses go to your music in Passthrough)"
+             : "Switch modes: \(c.config.pickerGesture.title.lowercased())")
         Divider()
         Text(c.device.matches ? "Output: \(c.device.name) ✓" : "Output: \(c.device.name) (dial inactive)")
         if c.mode.hijacks && !c.pressRoute.ok { Text("⚠ \(c.pressRoute.text)") }

@@ -114,7 +114,7 @@ do {
 
 do {
     var c = DialConfig()
-    check(c.pickerWindowMs == 500, "default picker window is 500 ms")
+    check(c.pickerWindowMs == 1200, "default picker window is 1200 ms")
     check(c.wiggleWindowMs == 400, "default wiggle window is 400 ms")
     check(c.autoPassthroughMinutes == 5, "auto-passthrough defaults to 5 min")
     check(c.restoreTiming == .everyClick, "volume goes back after every click by default")
@@ -132,8 +132,8 @@ do {
 
     let open = e.handle(.openModePicker(initialStep: 1))
     check(e.pickerOpen, "picker open")
-    check(open.actions.contains(.hud(.list(title: "Choose mode · turn, then press", items: ModeID.allCases.map(\.title), selected: 1))), "picker preselects next mode")
-    _ = e.handle(.event(.rotateCW)) // → scrub
+    check(open.actions.contains(.hud(.list(title: "Choose mode · turn, then press", items: ModeID.allCases.map(\.title), selected: 0))), "picker opens on the current mode (the opening turn doesn't move it)")
+    _ = e.handle(.event(.rotateCW)); _ = e.handle(.event(.rotateCW)) // passthrough → scroll → scrub
     let sel = e.handle(.event(.press1))
     check(e.mode == .scrub && !e.pickerOpen, "press selects scrub")
     check(sel.actions.first == .setMode(.scrub), "setMode action")
@@ -151,9 +151,17 @@ do {
 
     _ = e.handle(.openModePicker(initialStep: 0))
     _ = e.handle(.event(.rotateCCW)); _ = e.handle(.event(.rotateCCW)) // scrub(2) → passthrough(0)
-    _ = e.handle(.event(.rotateCCW)) // wraps → macro(4)
+    _ = e.handle(.event(.rotateCCW)) // wraps → focus timer(5)
     _ = e.handle(.event(.press1))
     check(e.mode == ModeID.allCases.last, "picker wraps around")
+
+    // From Focus Timer (the last mode), double press + turn opens on Focus Timer, not wrapped to the top.
+    let fromFocus = e.handle(.openModePicker(initialStep: 1))
+    check(fromFocus.actions.contains(.hud(.list(title: "Choose mode · turn, then press", items: ModeID.allCases.map(\.title),
+                                                 selected: ModeID.allCases.count - 1))), "picker from Focus Timer opens on Focus Timer")
+    _ = e.handle(.event(.rotateCCW))
+    _ = e.handle(.event(.press1))
+    check(e.mode == .macro, "one turn back from Focus Timer selects Macro")
 }
 
 do {
