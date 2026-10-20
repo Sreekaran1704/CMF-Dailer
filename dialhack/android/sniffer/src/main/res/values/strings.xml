@@ -1,0 +1,4 @@
+<resources>
+    <string name="app_name">DialSniffer</string>
+    <string name="a11y_description">DialSniffer logs volume and media key events (only those keys) to test whether Bluetooth headset buttons reach accessibility services. Nothing leaves the device.</string>
+</resources>
