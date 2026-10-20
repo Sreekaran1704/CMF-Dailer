@@ -2,3 +2,9 @@ __pycache__/
 *.jsonl
 .venv/
 analytics/data/
+.build/
+*.zip
+.DS_Store
+android/local.properties
+.gradle/
+android/**/build/

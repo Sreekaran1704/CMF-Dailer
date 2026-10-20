@@ -3,6 +3,7 @@
 #   ./build.sh          build .build/DialHack.app
 #   ./build.sh test     build and run the headless Core tests
 #   ./build.sh install  build and copy to /Applications (needed for launch at login)
+#   ./build.sh release  build and zip it as .build/DialHack.zip, ready to attach to a GitHub Release
 # Signed ad-hoc with an identifier-based designated requirement, so Accessibility grants survive rebuilds.
 set -e
 cd "$(dirname "$0")"
@@ -33,4 +34,12 @@ if [ "$1" = "install" ]; then
   rm -rf /Applications/DialHack.app
   cp -R "$APP" /Applications/DialHack.app
   echo "Installed /Applications/DialHack.app"
+fi
+
+if [ "$1" = "release" ]; then
+  rm -f .build/DialHack.zip
+  # ditto keeps the bundle's symlinks, permissions and signature intact (plain zip can break them).
+  ditto -c -k --keepParent "$APP" .build/DialHack.zip
+  echo "Release zip: $(pwd)/.build/DialHack.zip ($(du -h .build/DialHack.zip | cut -f1))"
+  shasum -a 256 .build/DialHack.zip
 fi
